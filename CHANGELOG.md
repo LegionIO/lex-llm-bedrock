@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-04-28
+
+- Require `lex-llm >= 0.1.5` for the shared model offering, alias, readiness, and fleet lane contract used by Bedrock routing metadata.
+
 ## 0.1.0 - 2026-04-28
 
 - Initial Legion::Extensions::Llm Bedrock provider extension scaffold.
