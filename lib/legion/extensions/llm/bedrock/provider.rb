@@ -4,7 +4,6 @@ require 'aws-sdk-bedrock'
 require 'aws-sdk-bedrockruntime'
 require 'legion/json'
 require 'legion/logging'
-require 'legion/settings'
 require 'legion/extensions/llm'
 
 module Legion
