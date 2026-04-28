@@ -26,6 +26,8 @@ module Legion
           ALIASES = STATIC_MODELS.to_h { |entry| [entry.fetch(:alias), entry.fetch(:model)] }.freeze
 
           class << self
+            attr_writer :registry_publisher
+
             def slug = 'bedrock'
 
             def configuration_options
@@ -42,6 +44,10 @@ module Legion
 
             def configuration_requirements = []
             def capabilities = Capabilities
+
+            def registry_publisher
+              @registry_publisher ||= RegistryPublisher.new
+            end
 
             def resolve_model_id(model_id, config: nil) # rubocop:disable Lint/UnusedMethodArgument
               ALIASES.fetch(model_id.to_s, model_id.to_s)
@@ -83,7 +89,9 @@ module Legion
             return static_offerings(**filters) unless live
 
             response = bedrock_client.list_foundation_models(**filters)
-            Array(value(response, :model_summaries)).map { |summary| offering_from_summary(summary) }
+            Array(value(response, :model_summaries)).map { |summary| offering_from_summary(summary) }.tap do |offerings|
+              self.class.registry_publisher.publish_offerings_async(offerings, readiness: readiness(live: false))
+            end
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -116,7 +124,10 @@ module Legion
           end
 
           def readiness(live: false)
-            health(live: live).merge(local: false, remote: true, api_base: api_base, endpoints: endpoint_manifest)
+            health(live: live).merge(local: false, remote: true, api_base: api_base,
+                                     endpoints: endpoint_manifest).tap do |metadata|
+              self.class.registry_publisher.publish_readiness_async(metadata) if live
+            end
           end
 
           def list_models

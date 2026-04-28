@@ -80,6 +80,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   it 'builds live offerings from ListFoundationModels summaries' do
+    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
+    allow(registry_publisher).to receive(:publish_offerings_async)
     allow(bedrock_client).to receive(:list_foundation_models).and_return(
       response(
         model_summaries: [
@@ -99,11 +101,32 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(Aws::Bedrock::Client).to have_received(:new).with(hash_including(region: 'us-west-2'))
     expect(bedrock_client).to have_received(:list_foundation_models).with(by_provider: 'Meta')
     expect(offerings.first.metadata).to include(model_family: :meta)
+    expect(registry_publisher).to have_received(:publish_offerings_async)
+      .with(offerings, readiness: hash_including(provider: :bedrock, live: false))
   end
 
   it 'reports non-live health without AWS calls' do
     expect(provider.health(live: false)).to include(provider: :bedrock, ready: true, checked: false)
     expect(bedrock_client).not_to have_received(:list_foundation_models)
+  end
+
+  it 'publishes live readiness metadata asynchronously through the registry publisher' do
+    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
+    allow(registry_publisher).to receive(:publish_readiness_async)
+    allow(bedrock_client).to receive(:list_foundation_models).and_return(response(model_summaries: []))
+
+    readiness = provider.readiness(live: true)
+
+    expect(registry_publisher).to have_received(:publish_readiness_async).with(readiness)
+  end
+
+  it 'builds sanitized lex-llm registry events for Bedrock offering availability' do
+    offering = provider.discover_offerings(live: false).first
+    events = capture_registry_events([offering], readiness: { ready: true })
+
+    expect(events.first.to_h).to include(event_type: :offering_available)
+    expect(events.first.to_h.dig(:offering, :provider_family)).to eq(:bedrock)
+    expect(events.first.to_h.dig(:offering, :model)).to eq('anthropic.claude-3-haiku-20240307-v1:0')
   end
 
   it 'renders Converse requests and parses assistant responses' do
@@ -183,6 +206,10 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end.new(values)
   end
 
+  def registry_publisher
+    @registry_publisher ||= instance_double(described_class::RegistryPublisher)
+  end
+
   def tool(name)
     Struct.new(:name, :description, :params_schema).new(name, 'look up a value', { type: 'object', properties: {} })
   end
@@ -200,5 +227,15 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       ],
       tool_choice: { tool: { name: 'lookup' } }
     }
+  end
+
+  def capture_registry_events(offerings, readiness:)
+    publisher = described_class::RegistryPublisher.new
+    events = []
+    allow(publisher).to receive(:publishing_available?).and_return(true)
+    allow(publisher).to receive(:publish_event) { |event| events << event }
+    allow(Thread).to receive(:new).and_yield
+    publisher.publish_offerings_async(offerings, readiness:)
+    events
   end
 end

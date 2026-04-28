@@ -2,6 +2,8 @@
 
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/bedrock/provider'
+require 'legion/extensions/llm/bedrock/registry_event_builder'
+require 'legion/extensions/llm/bedrock/registry_publisher'
 require 'legion/extensions/llm/bedrock/version'
 
 module Legion
