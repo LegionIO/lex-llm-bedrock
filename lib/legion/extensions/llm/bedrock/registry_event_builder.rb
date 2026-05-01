@@ -6,7 +6,7 @@ module Legion
       module Bedrock
         # Builds sanitized lex-llm registry envelopes for Bedrock provider state.
         class RegistryEventBuilder
-          include Legion::Logging::Helper
+          include Legion::Logging::Helper if defined?(Legion::Logging::Helper)
 
           def readiness(readiness)
             registry_event_class.public_send(

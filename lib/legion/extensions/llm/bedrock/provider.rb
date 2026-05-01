@@ -12,7 +12,7 @@ module Legion
       module Bedrock
         # Amazon Bedrock provider implementation for the Legion::Extensions::Llm contract.
         class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
-          include Legion::Logging::Helper
+          include Legion::Logging::Helper if defined?(Legion::Logging::Helper)
 
           DEFAULT_REGION = 'us-east-1'
 
