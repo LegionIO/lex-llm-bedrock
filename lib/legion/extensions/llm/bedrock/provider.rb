@@ -188,8 +188,8 @@ module Legion
             parse_embedding_response(response, model: model_id)
           end
 
-          def complete(messages, tools:, temperature:, model:, params: {}, schema: nil, thinking: nil, tool_prefs: nil,
-                       &)
+          def complete(messages, tools:, temperature:, model:, params: {}, headers: {}, schema: nil, thinking: nil, # rubocop:disable Lint/UnusedMethodArgument
+                       tool_prefs: nil, &)
             payload = params.dup
             payload[:additional_model_request_fields] ||= {}
             payload[:additional_model_request_fields][:thinking] = thinking if thinking
