@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5 - 2026-04-30
+
+- Audit logging, rescue blocks, and README for full observability.
+- Add `include Legion::Logging::Helper` to Provider, RegistryPublisher, and RegistryEventBuilder.
+- Replace all bare rescue blocks with `handle_exception(e, level:, handled:, operation:)` calls.
+- Add `log.info` for key actions: chat, stream, embed, health, discovery, list_models.
+- Remove custom `log_publish_failure` method in favor of standard `handle_exception`.
+- Update README with architecture, file map, dependency table, and development guide.
+
 ## 0.1.4 - 2026-04-30
 
 - Add headers: parameter to complete method signature matching base provider contract

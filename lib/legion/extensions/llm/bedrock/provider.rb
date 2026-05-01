@@ -12,6 +12,8 @@ module Legion
       module Bedrock
         # Amazon Bedrock provider implementation for the Legion::Extensions::Llm contract.
         class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
+          include Legion::Logging::Helper
+
           DEFAULT_REGION = 'us-east-1'
 
           STATIC_MODELS = [
@@ -85,10 +87,15 @@ module Legion
           end
 
           def discover_offerings(live: false, **filters)
-            return static_offerings(**filters) unless live
+            unless live
+              log.debug { 'bedrock.provider.discover_offerings: returning static catalog' }
+              return static_offerings(**filters)
+            end
 
+            log.info { "bedrock.provider.discover_offerings: listing foundation models (region=#{region})" }
             response = bedrock_client.list_foundation_models(**filters)
             Array(value(response, :model_summaries)).map { |summary| offering_from_summary(summary) }.tap do |offerings|
+              log.info { "bedrock.provider.discover_offerings: found #{offerings.size} models" }
               self.class.registry_publisher.publish_offerings_async(offerings, readiness: readiness(live: false))
             end
           end
@@ -114,15 +121,22 @@ module Legion
               live: live,
               credentials: credential_source
             }
-            return baseline.merge(checked: false) unless live
+            unless live
+              log.debug { "bedrock.provider.health: offline check (region=#{region})" }
+              return baseline.merge(checked: false)
+            end
 
+            log.info { "bedrock.provider.health: live check (region=#{region})" }
             bedrock_client.list_foundation_models
+            log.info { 'bedrock.provider.health: live check passed' }
             baseline.merge(checked: true)
           rescue StandardError => e
+            handle_exception(e, level: :warn, handled: true, operation: 'bedrock.provider.health')
             baseline.merge(checked: true, ready: false, error: e.class.name, message: e.message)
           end
 
           def readiness(live: false)
+            log.debug { "bedrock.provider.readiness: checking (live=#{live})" }
             health(live: live).merge(local: false, remote: true, api_base: api_base,
                                      endpoints: endpoint_manifest).tap do |metadata|
               self.class.registry_publisher.publish_readiness_async(metadata) if live
@@ -130,6 +144,7 @@ module Legion
           end
 
           def list_models
+            log.info { 'bedrock.provider.list_models: fetching live model list' }
             discover_offerings(live: true).map do |offering|
               Legion::Extensions::Llm::Model::Info.new(
                 id: offering.model,
@@ -143,6 +158,7 @@ module Legion
           end
 
           def chat(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {})
+            log.info { "bedrock.provider.chat: model=#{model_id(model)} messages=#{messages.size}" }
             request = Utils.deep_merge(
               converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:),
               params
@@ -152,6 +168,7 @@ module Legion
 
           def stream(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
                      &)
+            log.info { "bedrock.provider.stream: model=#{model_id(model)} messages=#{messages.size}" }
             request = Utils.deep_merge(
               converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:),
               params
@@ -160,6 +177,7 @@ module Legion
           end
 
           def count_tokens(messages, model:, system: nil, params: {})
+            log.debug { "bedrock.provider.count_tokens: model=#{model_id(model)}" }
             request = Utils.deep_merge(
               {
                 model_id: model_id(model),
@@ -172,20 +190,21 @@ module Legion
           end
 
           def embed(text, model:, dimensions: nil)
-            model_id = model_id(model)
-            unless titan_embed?(model_id)
+            mid = model_id(model)
+            unless titan_embed?(mid)
               raise NotImplementedError,
-                    "Bedrock embedding payload for #{model_id} is not standardized"
+                    "Bedrock embedding payload for #{mid} is not standardized"
             end
 
+            log.info { "bedrock.provider.embed: model=#{mid}" }
             body = { inputText: text, dimensions: dimensions }.compact
             response = runtime_client.invoke_model(
-              model_id: model_id,
+              model_id: mid,
               content_type: 'application/json',
               accept: 'application/json',
               body: Legion::JSON.generate(body)
             )
-            parse_embedding_response(response, model: model_id)
+            parse_embedding_response(response, model: mid)
           end
 
           def complete(messages, tools:, temperature:, model:, params: {}, headers: {}, schema: nil, thinking: nil, # rubocop:disable Lint/UnusedMethodArgument

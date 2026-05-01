@@ -6,6 +6,8 @@ module Legion
       module Bedrock
         # Best-effort publisher for Bedrock provider availability events.
         class RegistryPublisher
+          include Legion::Logging::Helper
+
           APP_ID = 'lex-llm-bedrock'
 
           def initialize(builder: RegistryEventBuilder.new)
@@ -13,10 +15,14 @@ module Legion
           end
 
           def publish_readiness_async(readiness)
+            log.debug { 'bedrock.registry_publisher.publish_readiness_async: scheduling readiness event' }
             schedule { publish_event(@builder.readiness(readiness)) }
           end
 
           def publish_offerings_async(offerings, readiness:)
+            log.debug do
+              "bedrock.registry_publisher.publish_offerings_async: scheduling #{Array(offerings).size} offerings"
+            end
             schedule do
               Array(offerings).each do |offering|
                 publish_event(@builder.offering_available(offering, readiness:))
@@ -33,10 +39,10 @@ module Legion
               Thread.current.abort_on_exception = false
               yield
             rescue StandardError => e
-              log_publish_failure(e, level: :debug)
+              handle_exception(e, level: :debug, handled: true, operation: 'bedrock.registry_publisher.schedule')
             end
           rescue StandardError => e
-            log_publish_failure(e, level: :debug)
+            handle_exception(e, level: :debug, handled: true, operation: 'bedrock.registry_publisher.schedule')
             false
           end
 
@@ -45,7 +51,7 @@ module Legion
 
             message_class.new(event:, app_id: APP_ID).publish(spool: false)
           rescue StandardError => e
-            log_publish_failure(e)
+            handle_exception(e, level: :warn, handled: true, operation: 'bedrock.registry_publisher.publish_event')
             false
           end
 
@@ -56,7 +62,9 @@ module Legion
             return true unless ::Legion::Transport::Connection.respond_to?(:session_open?)
 
             ::Legion::Transport::Connection.session_open?
-          rescue StandardError
+          rescue StandardError => e
+            handle_exception(e, level: :debug, handled: true,
+                                operation: 'bedrock.registry_publisher.publishing_available?')
             false
           end
 
@@ -70,7 +78,9 @@ module Legion
 
             require 'legion/extensions/llm/bedrock/transport/messages/registry_event'
             message_class_defined?
-          rescue LoadError
+          rescue LoadError => e
+            handle_exception(e, level: :debug, handled: true,
+                                operation: 'bedrock.registry_publisher.transport_message_available?')
             false
           end
 
@@ -80,18 +90,6 @@ module Legion
 
           def message_class
             ::Legion::Extensions::Llm::Bedrock::Transport::Messages::RegistryEvent
-          end
-
-          def log_publish_failure(error, level: :warn)
-            message = "[lex-llm-bedrock] llm.registry publish failed: #{error.class}: #{error.message}"
-            logger = ::Legion::Extensions::Llm.logger if defined?(::Legion::Extensions::Llm)
-            if logger.respond_to?(level)
-              logger.public_send(level, message)
-            elsif logger.respond_to?(:debug)
-              logger.debug(message)
-            end
-          rescue StandardError
-            nil
           end
         end
       end
