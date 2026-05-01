@@ -19,7 +19,7 @@ class FakeConverseStream
 end
 
 RSpec.describe Legion::Extensions::Llm::Bedrock do
-  let(:provider) { described_class::Provider.new(Legion::Extensions::Llm.config) }
+  let(:provider) { described_class::Provider.new(bedrock_region: 'us-west-2', bedrock_stub_responses: true) }
   let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
   let(:model) do
     Legion::Extensions::Llm::Model::Info.new(id: 'anthropic.claude-3-haiku-20240307-v1:0', provider: :bedrock,
@@ -29,11 +29,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   let(:bedrock_client) { instance_double(Aws::Bedrock::Client) }
 
   before do
-    Legion::Extensions::Llm.configure do |config|
-      config.bedrock_region = 'us-west-2'
-      config.bedrock_stub_responses = true
-    end
-
     allow(Aws::BedrockRuntime::Client).to receive(:new).and_return(runtime_client)
     allow(Aws::Bedrock::Client).to receive(:new).and_return(bedrock_client)
     allow(bedrock_client).to receive(:list_foundation_models)
