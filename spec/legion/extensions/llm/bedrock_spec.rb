@@ -23,7 +23,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
   let(:model) do
     Legion::Extensions::Llm::Model::Info.new(id: 'anthropic.claude-3-haiku-20240307-v1:0', provider: :bedrock,
-                                             max_output_tokens: 2048)
+                                             metadata: { max_output_tokens: 2048 })
   end
   let(:runtime_client) { instance_double(Aws::BedrockRuntime::Client) }
   let(:bedrock_client) { instance_double(Aws::Bedrock::Client) }
@@ -39,18 +39,17 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     allow(bedrock_client).to receive(:list_foundation_models)
   end
 
-  it 'exposes provider defaults with offline discovery and inherited fleet settings' do
+  it 'exposes flat provider defaults without provider_settings' do
     settings = described_class.default_settings
 
-    expect(settings[:provider_family]).to eq(:bedrock)
-    expect(settings[:fleet]).to include(:enabled)
-    expect(settings.dig(:discovery, :live)).to be false
-    expect(settings.dig(:instances, :default, :region)).to eq('us-east-1')
-    expect(settings.dig(:instances, :default, :credentials, :provider)).to eq('aws-sdk-default-chain')
-  end
-
-  it 'registers the Legion::Extensions::Llm provider class' do
-    expect(Legion::Extensions::Llm::Provider.resolve(:bedrock)).to eq(described_class::Provider)
+    expect(settings[:enabled]).to be false
+    expect(settings[:default_model]).to eq('us.anthropic.claude-sonnet-4-6')
+    expect(settings[:region]).to eq('us-east-2')
+    expect(settings[:model_whitelist]).to eq([])
+    expect(settings[:model_blacklist]).to eq([])
+    expect(settings[:model_cache_ttl]).to eq(3600)
+    expect(settings[:tls]).to eq({ enabled: false, verify: :peer })
+    expect(settings[:instances]).to eq({})
   end
 
   it 'exposes region-aware Bedrock endpoint helpers' do
@@ -80,8 +79,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   it 'builds live offerings from ListFoundationModels summaries' do
-    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
-    allow(registry_publisher).to receive(:publish_offerings_async)
     allow(bedrock_client).to receive(:list_foundation_models).and_return(
       response(
         model_summaries: [
@@ -101,8 +98,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(Aws::Bedrock::Client).to have_received(:new).with(hash_including(region: 'us-west-2'))
     expect(bedrock_client).to have_received(:list_foundation_models).with(by_provider: 'Meta')
     expect(offerings.first.metadata).to include(model_family: :meta)
-    expect(registry_publisher).to have_received(:publish_offerings_async)
-      .with(offerings, readiness: hash_including(provider: :bedrock, live: false))
   end
 
   it 'reports non-live health without AWS calls' do
@@ -111,8 +106,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   it 'publishes live readiness metadata asynchronously through the registry publisher' do
-    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
-    allow(registry_publisher).to receive(:publish_readiness_async)
+    stub_registry_publisher
     allow(bedrock_client).to receive(:list_foundation_models).and_return(response(model_summaries: []))
 
     readiness = provider.readiness(live: true)
@@ -120,9 +114,76 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(registry_publisher).to have_received(:publish_readiness_async).with(readiness)
   end
 
-  it 'builds sanitized lex-llm registry events for Bedrock offering availability' do
-    offering = provider.discover_offerings(live: false).first
-    events = capture_registry_events([offering], readiness: { ready: true })
+  it 'returns Model::Info from list_models with capabilities from modalities' do
+    stub_registry_publisher
+    allow(bedrock_client).to receive(:list_foundation_models).and_return(
+      response(
+        model_summaries: [
+          {
+            model_id: 'anthropic.claude-3-haiku-20240307-v1:0',
+            provider_name: 'Anthropic',
+            input_modalities: %w[TEXT IMAGE],
+            output_modalities: ['TEXT'],
+            response_streaming_supported: true
+          },
+          {
+            model_id: 'amazon.titan-embed-text-v2:0',
+            provider_name: 'Amazon',
+            input_modalities: ['TEXT'],
+            output_modalities: ['EMBEDDING'],
+            response_streaming_supported: false
+          }
+        ]
+      )
+    )
+
+    models = provider.list_models
+
+    chat_model = models.find { |m| m.id.include?('claude') }
+    embed_model = models.find { |m| m.id.include?('titan-embed') }
+
+    expect(chat_model).to be_a(Legion::Extensions::Llm::Model::Info)
+    expect(chat_model.provider).to eq(:bedrock)
+    expect(chat_model.capabilities).to include(:completion, :streaming, :vision)
+    expect(chat_model.modalities_input).to include(:text, :image)
+    expect(chat_model.modalities_output).to include(:text)
+
+    expect(embed_model.capabilities).to include(:embedding)
+    expect(embed_model.modalities_output).to include(:embedding)
+  end
+
+  it 'publishes discovered models asynchronously through the registry publisher' do
+    stub_registry_publisher
+    allow(bedrock_client).to receive(:list_foundation_models).and_return(
+      response(
+        model_summaries: [
+          {
+            model_id: 'meta.llama3-2-11b-instruct-v1:0',
+            provider_name: 'Meta',
+            input_modalities: ['TEXT'],
+            output_modalities: ['TEXT'],
+            response_streaming_supported: true
+          }
+        ]
+      )
+    )
+
+    models = provider.list_models
+
+    expect(registry_publisher).to have_received(:publish_models_async)
+      .with(models, readiness: hash_including(provider: :bedrock, live: false))
+  end
+
+  it 'builds sanitized lex-llm registry events for Bedrock model availability' do
+    model_info = Legion::Extensions::Llm::Model::Info.new(
+      id: 'anthropic.claude-3-haiku-20240307-v1:0',
+      name: 'claude-3-haiku',
+      provider: :bedrock,
+      capabilities: %i[completion streaming vision],
+      modalities_input: %w[text image],
+      modalities_output: %w[text]
+    )
+    events = capture_registry_events([model_info], readiness: { ready: true })
 
     expect(events.first.to_h).to include(event_type: :offering_available)
     expect(events.first.to_h.dig(:offering, :provider_family)).to eq(:bedrock)
@@ -207,7 +268,13 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   def registry_publisher
-    @registry_publisher ||= instance_double(described_class::RegistryPublisher)
+    @registry_publisher ||= instance_double(Legion::Extensions::Llm::RegistryPublisher)
+  end
+
+  def stub_registry_publisher
+    allow(described_class).to receive(:registry_publisher).and_return(registry_publisher)
+    allow(registry_publisher).to receive(:publish_readiness_async)
+    allow(registry_publisher).to receive(:publish_models_async)
   end
 
   def tool(name)
@@ -229,13 +296,13 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     }
   end
 
-  def capture_registry_events(offerings, readiness:)
-    publisher = described_class::RegistryPublisher.new
+  def capture_registry_events(models, readiness:)
+    publisher = Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :bedrock)
     events = []
     allow(publisher).to receive(:publishing_available?).and_return(true)
     allow(publisher).to receive(:publish_event) { |event| events << event }
     allow(Thread).to receive(:new).and_yield
-    publisher.publish_offerings_async(offerings, readiness:)
+    publisher.publish_models_async(models, readiness:)
     events
   end
 end

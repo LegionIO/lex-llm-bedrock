@@ -27,8 +27,6 @@ module Legion
           ALIASES = STATIC_MODELS.to_h { |entry| [entry.fetch(:alias), entry.fetch(:model)] }.freeze
 
           class << self
-            attr_writer :registry_publisher
-
             def slug = 'bedrock'
 
             def configuration_options
@@ -47,7 +45,7 @@ module Legion
             def capabilities = Capabilities
 
             def registry_publisher
-              @registry_publisher ||= RegistryPublisher.new
+              Bedrock.registry_publisher
             end
 
             def resolve_model_id(model_id, config: nil) # rubocop:disable Lint/UnusedMethodArgument
@@ -96,7 +94,6 @@ module Legion
             response = bedrock_client.list_foundation_models(**filters)
             Array(value(response, :model_summaries)).map { |summary| offering_from_summary(summary) }.tap do |offerings|
               log.info { "bedrock.provider.discover_offerings: found #{offerings.size} models" }
-              self.class.registry_publisher.publish_offerings_async(offerings, readiness: readiness(live: false))
             end
           end
 
@@ -145,16 +142,11 @@ module Legion
 
           def list_models
             log.info { 'bedrock.provider.list_models: fetching live model list' }
-            discover_offerings(live: true).map do |offering|
-              Legion::Extensions::Llm::Model::Info.new(
-                id: offering.model,
-                name: offering.metadata[:alias] || offering.model,
-                provider: :bedrock,
-                family: offering.metadata[:model_family],
-                capabilities: offering.capabilities.map(&:to_s),
-                metadata: offering.to_h
-              )
-            end
+            response = bedrock_client.list_foundation_models
+            models = Array(value(response, :model_summaries)).filter_map { |summary| model_info_from_summary(summary) }
+            log.info { "bedrock.provider.list_models: found #{models.size} models" }
+            self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
+            models
           end
 
           def chat(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {})
@@ -240,6 +232,23 @@ module Legion
               model_family: normalize_provider(value(summary, :provider_name)) || model_family_for(model),
               usage_type: usage_type_from_modalities(value(summary, :output_modalities)),
               capabilities: capabilities_from_summary(summary),
+              metadata: normalize_response(summary)
+            )
+          end
+
+          def model_info_from_summary(summary)
+            model = value(summary, :model_id)
+            input_mods = Array(value(summary, :input_modalities)).map { |m| m.to_s.downcase }
+            output_mods = Array(value(summary, :output_modalities)).map { |m| m.to_s.downcase }
+
+            Legion::Extensions::Llm::Model::Info.new(
+              id: model,
+              name: alias_for(model) || model,
+              provider: :bedrock,
+              family: (normalize_provider(value(summary, :provider_name)) || model_family_for(model)).to_s,
+              capabilities: capabilities_from_modalities(input_mods, output_mods, summary),
+              modalities_input: input_mods,
+              modalities_output: output_mods,
               metadata: normalize_response(summary)
             )
           end
@@ -478,6 +487,18 @@ module Legion
             capabilities << :streaming if value(summary, :response_streaming_supported)
             capabilities << :vision if Array(value(summary, :input_modalities)).map(&:to_s).include?('IMAGE')
             capabilities
+          end
+
+          def capabilities_from_modalities(input_mods, output_mods, summary)
+            caps = []
+            caps << :embedding if output_mods.include?('embedding')
+            unless caps.include?(:embedding)
+              caps << :completion
+              caps << :streaming if value(summary, :response_streaming_supported)
+            end
+            caps << :vision if input_mods.include?('image')
+            caps << :tools if caps.include?(:completion)
+            caps
           end
 
           def model_family_for(model)

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 - 2026-04-30
+
+- Adopt lex-llm 0.1.9 base contract: flat `default_settings`, base `RegistryPublisher`, base `RegistryEventBuilder`.
+- Replace `provider_settings` call with flat default_settings hash (default_model, region, credentials, whitelist/blacklist, TLS, instances).
+- Remove `Provider.register` call; register configuration options directly via `Configuration.register_provider_options`.
+- Delete local `RegistryPublisher`, `RegistryEventBuilder`, and `transport/` directory; use parameterized base classes from lex-llm.
+- Move `registry_publisher` from `Provider` class method to `Bedrock` module method using `Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :bedrock)`.
+- Rewrite `list_models` to return `Model::Info` with `capabilities`, `modalities_input`, and `modalities_output` derived from Bedrock `inputModalities`/`outputModalities`.
+- Publish discovered models via `publish_models_async` (base contract) instead of `publish_offerings_async`.
+- Bump gemspec dependency to `lex-llm >= 0.1.9`.
+
 ## 0.1.5 - 2026-04-30
 
 - Audit logging, rescue blocks, and README for full observability.
