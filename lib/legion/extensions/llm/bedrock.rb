@@ -133,10 +133,4 @@ module Legion
   end
 end
 
-if Legion::Extensions::Llm::Configuration.respond_to?(:register_provider_options)
-  Legion::Extensions::Llm::Configuration.register_provider_options(
-    Legion::Extensions::Llm::Bedrock::Provider.configuration_options
-  )
-end
-
 Legion::Extensions::Llm::Bedrock.register_discovered_instances
