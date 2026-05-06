@@ -34,17 +34,16 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     allow(bedrock_client).to receive(:list_foundation_models)
   end
 
-  it 'exposes flat provider defaults without provider_settings' do
+  it 'exposes provider defaults through the shared provider settings shape' do
     settings = described_class.default_settings
+    instance = settings.dig(:instances, :default)
 
-    expect(settings[:enabled]).to be false
-    expect(settings[:default_model]).to eq('us.anthropic.claude-sonnet-4-6')
-    expect(settings[:region]).to eq('us-east-2')
-    expect(settings[:model_whitelist]).to eq([])
-    expect(settings[:model_blacklist]).to eq([])
-    expect(settings[:model_cache_ttl]).to eq(3600)
-    expect(settings[:tls]).to eq({ enabled: false, verify: :peer })
-    expect(settings[:instances]).to eq({})
+    expect(settings[:enabled]).to be true
+    expect(settings[:provider_family]).to eq(:bedrock)
+    expect(instance[:default_model]).to eq('us.anthropic.claude-sonnet-4-6')
+    expect(instance.dig(:provider, :region)).to eq('us-east-2')
+    expect(instance[:transport]).to eq(:aws_sdk)
+    expect(instance.dig(:fleet, :respond_to_requests)).to be false
   end
 
   it 'exposes region-aware Bedrock endpoint helpers' do
@@ -191,7 +190,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
                usage: { input_tokens: 3, output_tokens: 5 })
     )
 
-    result = provider.chat([message], model: model, temperature: 0.2)
+    result = provider.chat(messages: [message], model: model, temperature: 0.2)
 
     expect(runtime_client).to have_received(:converse).with(
       hash_including(
@@ -208,7 +207,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
     )
 
-    provider.chat([message], model: model, tools: { lookup: tool('lookup') }, tool_prefs: { choice: :lookup })
+    provider.chat(messages: [message], model: model, tools: { lookup: tool('lookup') },
+                  tool_prefs: { choice: :lookup })
 
     expect(runtime_client).to have_received(:converse).with(hash_including(tool_config: lookup_tool_config))
   end
@@ -218,7 +218,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     allow(runtime_client).to receive(:converse_stream).and_yield(stream)
     chunks = []
 
-    result = provider.stream([message], model: model) { |chunk| chunks << chunk }
+    result = provider.stream(messages: [message], model: model) { |chunk| chunks << chunk }
 
     expect(chunks.map(&:content)).to eq(%w[h i])
     expect([result.content, result.input_tokens, result.output_tokens]).to eq(['hi', 1, 2])
@@ -227,7 +227,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   it 'counts tokens through the Bedrock CountTokens Converse input shape' do
     allow(runtime_client).to receive(:count_tokens).and_return(response(input_tokens: 7))
 
-    result = provider.count_tokens([message], model: model)
+    result = provider.count_tokens(messages: [message], model: model)
 
     expect(runtime_client).to have_received(:count_tokens).with(
       model_id: 'anthropic.claude-3-haiku-20240307-v1:0',
@@ -241,7 +241,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       response(body: StringIO.new(Legion::JSON.generate('embedding' => [0.1, 0.2], 'inputTextTokenCount' => 4)))
     )
 
-    embedding = provider.embed('hello', model: 'amazon.titan-embed-text-v2:0', dimensions: 256)
+    embedding = provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0', dimensions: 256)
 
     expect(runtime_client).to have_received(:invoke_model).with(
       hash_including(model_id: 'amazon.titan-embed-text-v2:0', content_type: 'application/json')
@@ -251,7 +251,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   it 'does not invent a generic embedding body for non-Titan models' do
     expect do
-      provider.embed('hello', model: 'cohere.embed-english-v3')
+      provider.embed(text: 'hello', model: 'cohere.embed-english-v3')
     end.to raise_error(NotImplementedError, /not standardized/)
   end
 

@@ -2,7 +2,7 @@
 
 Amazon Bedrock provider extension for `Legion::Extensions::Llm`.
 
-This gem adds a hosted Bedrock provider surface for Legion LLM routing without depending on the old `legion-llm` gem. It uses the official AWS SDK for Ruby and keeps discovery offline by default, so loading the extension or running tests does not require live AWS credentials. It requires `lex-llm >= 0.1.5` for the shared model offering, alias, readiness, and fleet lane contract.
+This gem adds a hosted Bedrock provider surface for Legion LLM routing. It uses the official AWS SDK for Ruby and keeps discovery offline by default, so loading the extension or running tests does not require live AWS credentials. It requires `lex-llm >= 0.4.0` for the shared provider contract, response normalization, model offering, readiness, and fleet envelope contract.
 
 ## Architecture
 
@@ -32,7 +32,9 @@ Legion::Extensions::Llm::Bedrock
 | `legion-json` (>= 1.2.1) | Yes | JSON serialization |
 | `legion-logging` (>= 1.3.2) | Yes | Structured logging via Helper |
 | `legion-settings` (>= 1.3.14) | Yes | Configuration |
-| `lex-llm` (>= 0.1.5) | Yes | Shared provider contract, model offerings, routing |
+| `lex-llm` (>= 0.4.0) | Yes | Shared provider contract, response normalization, model offerings, fleet envelopes |
+| `legion-llm` (>= 0.9.0) | Yes | Routing and shared fleet worker execution |
+| `legion-transport` (>= 1.4.14) | Yes | AMQP subscriptions and replies |
 
 ## File Map
 
@@ -75,6 +77,25 @@ Legion::Extensions::Llm::Bedrock.default_settings
 
 Configuration options: `bedrock_region`, `bedrock_endpoint`, `bedrock_access_key_id`, `bedrock_secret_access_key`, `bedrock_session_token`, `bedrock_profile`, `bedrock_stub_responses`.
 
+## Fleet Responder
+
+Provider instances can opt in to consuming Legion LLM fleet requests. The provider-owned fleet actor only starts when at least one configured instance enables `respond_to_requests`.
+
+```yaml
+extensions:
+  llm:
+    bedrock:
+      instances:
+        local:
+          fleet:
+            enabled: true
+            respond_to_requests: true
+            capabilities:
+              - chat
+              - stream_chat
+              - embed
+```
+
 ## Provider Surface
 
 ```ruby
@@ -83,10 +104,10 @@ provider = Legion::Extensions::Llm::Bedrock::Provider.new(Legion::Extensions::Ll
 provider.discover_offerings(live: false)
 provider.offering_for(model: 'anthropic.claude-3-haiku-20240307-v1:0')
 provider.health(live: false)
-provider.chat(messages, model: model)
-provider.stream(messages, model: model) { |chunk| chunk.content }
-provider.embed('hello', model: 'amazon.titan-embed-text-v2:0')
-provider.count_tokens(messages, model: model)
+provider.chat(messages:, model:)
+provider.stream_chat(messages:, model:) { |chunk| chunk.content }
+provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0')
+provider.count_tokens(messages:, model:)
 ```
 
 `discover_offerings(live: false)` returns a small static catalog that is useful for routing defaults and unit tests. `discover_offerings(live: true)` calls Bedrock `ListFoundationModels` and maps the returned model summaries into `Legion::Extensions::Llm::Routing::ModelOffering` records.

@@ -131,6 +131,34 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
       )
     end
 
+    it 'normalizes generic settings keys to provider config keys' do
+      allow(credential_sources).to receive(:setting)
+        .with(:extensions, :llm, :bedrock)
+        .and_return({ region: 'us-west-2', endpoint: 'https://bedrock.example', access_key_id: 'AKID',
+                      secret_access_key: 'SECRET', session_token: 'SESSION' })
+
+      expect(discover[:settings]).to include(
+        bedrock_region: 'us-west-2',
+        bedrock_endpoint: 'https://bedrock.example',
+        bedrock_access_key_id: 'AKID',
+        bedrock_secret_access_key: 'SECRET',
+        bedrock_session_token: 'SESSION',
+        tier: :cloud
+      )
+    end
+
+    it 'discovers named instances from extension settings' do
+      allow(credential_sources).to receive(:setting)
+        .with(:extensions, :llm, :bedrock)
+        .and_return({ instances: { east: { region: 'us-east-1', profile: 'east-profile' } } })
+
+      expect(discover[:east]).to include(
+        bedrock_region: 'us-east-1',
+        bedrock_profile: 'east-profile',
+        tier: :cloud
+      )
+    end
+
     it 'omits :settings when setting returns nil' do
       allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock).and_return(nil)
 
