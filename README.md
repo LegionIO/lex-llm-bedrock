@@ -16,11 +16,8 @@ Legion::Extensions::Llm::Bedrock
 │   ├── discover_offerings # Static catalog + live ListFoundationModels
 │   ├── health / readiness # Provider health checks with live AWS verification
 │   └── list_models        # Live model enumeration
-├── RegistryEventBuilder   # Builds sanitized lex-llm registry envelopes
-├── RegistryPublisher      # Best-effort async publisher for registry events
-└── Transport
-    ├── Exchanges::LlmRegistry    # Topic exchange for llm.registry events
-    └── Messages::RegistryEvent   # AMQP message for registry event publishing
+├── Actor::FleetWorker     # Provider-owned fleet subscription gate
+└── Runners::FleetWorker   # Delegates fleet requests to lex-llm ProviderResponder
 ```
 
 ## Dependencies
@@ -39,12 +36,10 @@ Legion::Extensions::Llm::Bedrock
 
 | Path | Purpose |
 |------|---------|
-| `lib/legion/extensions/llm/bedrock.rb` | Entry point: namespace, default settings, provider registration |
+| `lib/legion/extensions/llm/bedrock.rb` | Entry point: namespace, default settings, discovery, and shared provider registration metadata |
 | `lib/legion/extensions/llm/bedrock/provider.rb` | Full Bedrock provider implementation |
-| `lib/legion/extensions/llm/bedrock/registry_event_builder.rb` | Builds lex-llm registry event envelopes |
-| `lib/legion/extensions/llm/bedrock/registry_publisher.rb` | Best-effort async registry event publishing |
-| `lib/legion/extensions/llm/bedrock/transport/exchanges/llm_registry.rb` | AMQP topic exchange definition |
-| `lib/legion/extensions/llm/bedrock/transport/messages/registry_event.rb` | AMQP message class for registry events |
+| `lib/legion/extensions/llm/bedrock/actors/fleet_worker.rb` | Starts the provider-owned fleet subscriber when an instance opts in |
+| `lib/legion/extensions/llm/bedrock/runners/fleet_worker.rb` | Hands provider fleet requests to `Legion::Extensions::Llm::Fleet::ProviderResponder` |
 | `lib/legion/extensions/llm/bedrock/version.rb` | `VERSION` constant |
 
 ## Install
@@ -68,7 +63,7 @@ Legion::Extensions::Llm.configure do |config|
 end
 ```
 
-If explicit keys are not configured, the AWS SDK default credential provider chain is used. Default settings expose `env://` credential references and mark live discovery disabled:
+If explicit keys are not configured, the AWS SDK default credential provider chain is used. Default settings define the Bedrock provider family, default instance metadata, AWS credential slots, and opt-in fleet responder controls:
 
 ```ruby
 Legion::Extensions::Llm::Bedrock.default_settings
@@ -95,6 +90,8 @@ extensions:
               - embed
 ```
 
+Fleet execution stays inside this provider extension until the final handoff to `lex-llm`'s shared `ProviderResponder` helper. This gem does not depend on `legion-llm` at runtime.
+
 ## Provider Surface
 
 ```ruby
@@ -104,7 +101,7 @@ provider.discover_offerings(live: false)
 provider.offering_for(model: 'anthropic.claude-3-haiku-20240307-v1:0')
 provider.health(live: false)
 provider.chat(messages:, model:)
-provider.stream_chat(messages:, model:) { |chunk| chunk.content }
+provider.stream(messages:, model:) { |chunk| chunk.content }
 provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0')
 provider.count_tokens(messages:, model:)
 ```
@@ -138,17 +135,17 @@ Provider-specific request bodies are not guessed. Non-Titan embedding models rai
 
 ## Observability
 
-All classes include `Legion::Logging::Helper` for structured logging:
+The Bedrock namespace and provider implementation include `Legion::Logging::Helper` for structured logging:
 
 - **Info-level**: provider connections, API calls (chat, stream, embed), model listing, health checks
-- **Debug-level**: offline health checks, readiness probes, token counting, registry event scheduling
-- **Rescue blocks**: every rescue calls `handle_exception(e, level:, handled:, operation:)` with dot-separated operation names (e.g., `bedrock.provider.health`, `bedrock.registry_publisher.publish_event`)
+- **Debug-level**: offline health checks, readiness probes, and token counting
+- **Rescue blocks**: handled provider failures call `handle_exception(e, level:, handled:, operation:)` with dot-separated operation names such as `bedrock.provider.health`
 
 ## Development
 
 ```bash
 bundle install
-bundle exec rspec --format progress  # all pass
+bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
 bundle exec rubocop -A               # auto-fix
 bundle exec rubocop                  # lint check (0 offenses expected)
 ```

@@ -4,6 +4,8 @@
 
 - Use the shared `lex-llm` fleet provider responder helper for provider-owned fleet workers.
 - Remove the runtime `legion-llm` dependency and require `lex-llm >= 0.4.3` for responder-side fleet execution.
+- Refresh README architecture, file map, fleet responder, and development verification guidance for the current provider-owned fleet implementation.
+- Silence test logging so the required full-suite RSpec gate writes only to the configured output files.
 
 ## 0.3.3 - 2026-05-06
 
