@@ -2,7 +2,7 @@
 
 Amazon Bedrock provider extension for `Legion::Extensions::Llm`.
 
-This gem adds a hosted Bedrock provider surface for Legion LLM routing. It uses the official AWS SDK for Ruby and keeps discovery offline by default, so loading the extension or running tests does not require live AWS credentials. It requires `lex-llm >= 0.4.0` for the shared provider contract, response normalization, model offering, readiness, and fleet envelope contract.
+This gem adds a hosted Bedrock provider surface for Legion LLM routing. It uses the official AWS SDK for Ruby and keeps discovery offline by default, so loading the extension or running tests does not require live AWS credentials. It requires `lex-llm >= 0.4.3` for the shared provider contract, response normalization, model offering, readiness, fleet envelope contract, and provider-owned fleet responder execution.
 
 ## Architecture
 
@@ -32,8 +32,7 @@ Legion::Extensions::Llm::Bedrock
 | `legion-json` (>= 1.2.1) | Yes | JSON serialization |
 | `legion-logging` (>= 1.3.2) | Yes | Structured logging via Helper |
 | `legion-settings` (>= 1.3.14) | Yes | Configuration |
-| `lex-llm` (>= 0.4.0) | Yes | Shared provider contract, response normalization, model offerings, fleet envelopes |
-| `legion-llm` (>= 0.9.0) | Yes | Routing and shared fleet worker execution |
+| `lex-llm` (>= 0.4.3) | Yes | Shared provider contract, response normalization, model offerings, fleet envelopes, and fleet responder execution |
 | `legion-transport` (>= 1.4.14) | Yes | AMQP subscriptions and replies |
 
 ## File Map
