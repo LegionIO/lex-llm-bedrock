@@ -86,7 +86,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
 
       expect(discover).to include(
         env_sigv4: {
-          api_key: 'AKID123',
           bedrock_access_key_id: 'AKID123',
           bedrock_secret_access_key: 'secret456',
           bedrock_session_token: 'session789',
@@ -145,6 +144,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
         bedrock_session_token: 'SESSION',
         tier: :cloud
       )
+      expect(discover[:settings]).not_to have_key(:api_key)
     end
 
     it 'discovers named instances from extension settings' do
@@ -193,7 +193,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
 
       expect(discover).to include(
         broker: {
-          api_key: 'AKID-BROKER',
           bedrock_access_key_id: 'AKID-BROKER',
           bedrock_secret_access_key: 'SECRET-BROKER',
           bedrock_session_token: 'SES-BROKER',

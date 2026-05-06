@@ -72,6 +72,18 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(offering.metadata).to include(model_family: :anthropic, alias: 'claude-3-haiku')
   end
 
+  it 'uses provider instance transport and tier in offerings' do
+    configured = described_class::Provider.new(
+      bedrock_region: 'us-west-2',
+      bedrock_stub_responses: true,
+      transport: :rabbitmq,
+      tier: :fleet
+    )
+    offering = configured.offering_for(model: 'claude-3-haiku', model_family: :anthropic)
+
+    expect(offering.to_h).to include(transport: :rabbitmq, tier: :fleet)
+  end
+
   it 'builds live offerings from ListFoundationModels summaries' do
     allow(bedrock_client).to receive(:list_foundation_models).and_return(
       response(

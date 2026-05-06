@@ -157,11 +157,8 @@ module Legion
             tools: {},
             tool_prefs: nil,
             params: {},
-            headers: {},
-            schema: nil,
-            thinking: nil
+            **_provider_options
           )
-            _ = [headers, schema, thinking]
             log.info { "bedrock.provider.chat: model=#{model_id(model)} messages=#{messages.size}" }
             request = Utils.deep_merge(
               converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:),
@@ -171,8 +168,7 @@ module Legion
           end
 
           def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
-                     headers: {}, schema: nil, thinking: nil, &)
-            _ = [headers, schema, thinking]
+                     **_provider_options, &)
             log.info { "bedrock.provider.stream: model=#{model_id(model)} messages=#{messages.size}" }
             request = Utils.deep_merge(
               converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:),
@@ -204,9 +200,8 @@ module Legion
             model:,
             dimensions: nil,
             params: {},
-            headers: {}
+            **_provider_options
           )
-            _ = headers
             mid = model_id(model)
             unless titan_embed?(mid)
               raise NotImplementedError,
@@ -283,13 +278,21 @@ module Legion
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :bedrock,
               instance_id: instance_id,
-              transport: :aws_sdk,
-              tier: :frontier,
+              transport: configured_transport(:aws_sdk),
+              tier: configured_tier(:frontier),
               model: model,
               usage_type: usage_type,
               capabilities: capabilities || default_capabilities(model),
               metadata: metadata.merge(model_family: model_family, alias: alias_name).compact
             )
+          end
+
+          def configured_transport(default)
+            config.respond_to?(:transport) ? config.transport : default
+          end
+
+          def configured_tier(default)
+            config.respond_to?(:tier) ? config.tier : default
           end
 
           def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:)

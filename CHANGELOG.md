@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.5 - 2026-05-06
+
+- Load provider-owned fleet actors through the LegionIO subscription base and the canonical Bedrock provider root.
+- Keep fleet runners anchored on the provider root namespace so provider constants and instance discovery are always loaded.
+- Preserve configured transport and tier metadata when Bedrock builds routing offerings.
+- Strip temporary generic API key fields from discovered Bedrock instance configs after credential deduplication.
+- Clean up provider method signatures and README examples from Copilot review feedback.
+- Gate release publishing on the shared security workflow.
+
 ## 0.3.4 - 2026-05-06
 
 - Use the shared `lex-llm` fleet provider responder helper for provider-owned fleet workers.

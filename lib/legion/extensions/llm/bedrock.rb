@@ -65,7 +65,7 @@ module Legion
           discover_env_sigv4(candidates)
           discover_settings(candidates)
           discover_broker(candidates)
-          CredentialSources.dedup_credentials(candidates)
+          CredentialSources.dedup_credentials(candidates).transform_values { |config| sanitize_instance_config(config) }
         end
 
         def self.discover_env_bearer(candidates)
@@ -107,13 +107,13 @@ module Legion
           settings = CredentialSources.setting(:extensions, :llm, :bedrock)
           return unless settings.is_a?(Hash) && !settings.empty?
 
-          default_config = normalize_instance_config(settings)
+          default_config = dedup_config(normalize_instance_config(settings))
           candidates[:settings] = default_config.merge(tier: :cloud) unless default_config.empty?
 
           settings_instances(settings).each do |name, config|
             next unless config.is_a?(Hash)
 
-            candidates[name.to_sym] = normalize_instance_config(config).merge(tier: :cloud)
+            candidates[name.to_sym] = dedup_config(normalize_instance_config(config)).merge(tier: :cloud)
           end
         end
 
@@ -165,12 +165,21 @@ module Legion
           normalized[:bedrock_endpoint] ||= normalized.delete(:endpoint)
           normalized[:bedrock_endpoint] ||= normalized.delete(:base_url)
           normalized[:bedrock_endpoint] ||= normalized.delete(:api_base)
-          normalized[:bedrock_access_key_id] ||= normalized[:api_key] || normalized.delete(:access_key_id)
+          normalized[:bedrock_access_key_id] ||= normalized.delete(:api_key) || normalized.delete(:access_key_id)
           normalized[:bedrock_secret_access_key] ||= normalized.delete(:secret_key)
           normalized[:bedrock_secret_access_key] ||= normalized.delete(:secret_access_key)
           normalized[:bedrock_session_token] ||= normalized.delete(:session_token)
           normalized[:bedrock_profile] ||= normalized.delete(:profile)
           normalized.compact.except(:instances)
+        end
+
+        def self.dedup_config(config)
+          key = config[:bedrock_access_key_id]
+          key ? config.merge(api_key: key) : config
+        end
+
+        def self.sanitize_instance_config(config)
+          config.except(:api_key)
         end
 
         Legion::Extensions::Llm::Configuration.register_provider_options(Provider.configuration_options) if

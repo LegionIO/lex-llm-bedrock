@@ -100,10 +100,12 @@ provider = Legion::Extensions::Llm::Bedrock::Provider.new(Legion::Extensions::Ll
 provider.discover_offerings(live: false)
 provider.offering_for(model: 'anthropic.claude-3-haiku-20240307-v1:0')
 provider.health(live: false)
-provider.chat(messages:, model:)
-provider.stream(messages:, model:) { |chunk| chunk.content }
+messages = [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')]
+model = 'anthropic.claude-3-haiku-20240307-v1:0'
+provider.chat(messages: messages, model: model)
+provider.stream(messages: messages, model: model) { |chunk| chunk.content }
 provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0')
-provider.count_tokens(messages:, model:)
+provider.count_tokens(messages: messages, model: model)
 ```
 
 `discover_offerings(live: false)` returns a small static catalog that is useful for routing defaults and unit tests. `discover_offerings(live: true)` calls Bedrock `ListFoundationModels` and maps the returned model summaries into `Legion::Extensions::Llm::Routing::ModelOffering` records.
