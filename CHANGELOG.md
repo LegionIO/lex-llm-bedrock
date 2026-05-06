@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.5 - 2026-05-06
+
+- Load provider-owned fleet actors through the LegionIO subscription base and the canonical Bedrock provider root.
+- Keep fleet runners anchored on the provider root namespace so provider constants and instance discovery are always loaded.
+- Preserve configured transport and tier metadata when Bedrock builds routing offerings.
+- Strip temporary generic API key fields from discovered Bedrock instance configs after credential deduplication.
+- Clean up provider method signatures and README examples from Copilot review feedback.
+- Gate release publishing on the shared security workflow.
+
+## 0.3.4 - 2026-05-06
+
+- Use the shared `lex-llm` fleet provider responder helper for provider-owned fleet workers.
+- Remove the runtime `legion-llm` dependency and require `lex-llm >= 0.4.3` for responder-side fleet execution.
+- Refresh README architecture, file map, fleet responder, and development verification guidance for the current provider-owned fleet implementation.
+- Silence test logging so the required full-suite RSpec gate writes only to the configured output files.
+
+## 0.3.3 - 2026-05-06
+
+- Remove require-time provider self-registration; `legion-llm` now owns adapter creation and registry writes from loaded provider discovery metadata.
+- Bump dependency floors to `lex-llm >= 0.4.1` and `legion-llm >= 0.9.1`.
+
+## 0.3.2 - 2026-05-06
+
+- Enforce the shared keyword-only `lex-llm` provider contract for chat, streaming, embeddings, and token counting.
+- Move defaults back to `Legion::Extensions::Llm.provider_settings` with AWS credentials/provider metadata under the default instance and instance-level fleet responder settings.
+- Add provider-owned fleet responder actor and runner backed by `legion-llm` fleet policy execution.
+- Bump the transport dependency floor to `legion-transport >= 1.4.14`.
+
+## 0.3.1 - 2026-05-03
+
+- Normalize generic settings keys to Bedrock provider config keys during instance discovery.
+- Support named Bedrock instances from extension settings.
+
 ## 0.3.0 - 2026-05-01
 
 - Add auto-discovery via CredentialSources and AutoRegistration from lex-llm 0.3.0
