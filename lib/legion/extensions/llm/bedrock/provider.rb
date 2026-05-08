@@ -140,7 +140,7 @@ module Legion
             end
           end
 
-          def list_models
+          def list_models(**)
             log.info { 'bedrock.provider.list_models: fetching live model list' }
             response = bedrock_client.list_foundation_models
             models = Array(value(response, :model_summaries)).filter_map { |summary| model_info_from_summary(summary) }
