@@ -3,7 +3,7 @@
 require 'aws-sdk-bedrock'
 require 'aws-sdk-bedrockruntime'
 require 'legion/json'
-require 'legion/logging'
+require 'legion/logging/helper'
 require 'legion/extensions/llm'
 
 module Legion
@@ -164,6 +164,10 @@ module Legion
               converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:),
               params
             )
+            log.debug do
+              "bedrock.provider.chat: request prepared model=#{model_id(model)} tools=#{tools.size} " \
+                "tool_choice=#{tool_choice_label(tool_prefs)} param_keys=#{params.keys.map(&:to_s).sort.join(',')}"
+            end
             parse_converse_response(runtime_client.converse(**request), model_id(model))
           end
 
@@ -174,6 +178,10 @@ module Legion
               converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:),
               params
             )
+            log.debug do
+              "bedrock.provider.stream: request prepared model=#{model_id(model)} tools=#{tools.size} " \
+                "tool_choice=#{tool_choice_label(tool_prefs)} param_keys=#{params.keys.map(&:to_s).sort.join(',')}"
+            end
             stream_converse(request, model_id(model), &)
           end
 
@@ -349,6 +357,10 @@ module Legion
           def format_tool_config(tools, tool_prefs)
             return nil if tools.empty?
 
+            log.debug do
+              "bedrock.provider.tools: formatting tools=#{tools.keys.map(&:to_s).sort.join(',')} " \
+                "tool_choice=#{tool_choice_label(tool_prefs)}"
+            end
             { tools: tools.values.map { |tool| tool_definition(tool) }, tool_choice: tool_choice(tool_prefs) }.compact
           end
 
@@ -380,6 +392,12 @@ module Legion
             else
               { tool: { name: choice.to_s } }
             end
+          end
+
+          def tool_choice_label(tool_prefs)
+            return 'none' unless tool_prefs
+
+            (tool_prefs[:choice] || tool_prefs['choice'] || 'unspecified').to_s
           end
 
           def parse_converse_response(response, fallback_model)

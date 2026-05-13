@@ -19,6 +19,10 @@ require 'legion/extensions/llm/bedrock/actors/fleet_worker'
 RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::FleetWorker do # rubocop:disable RSpec/SpecFilePathFormat
   subject(:actor) { described_class.new }
 
+  it 'uses the shared logging helper' do
+    expect(described_class.ancestors).to include(Legion::Logging::Helper)
+  end
+
   it 'uses the provider-owned fleet runner' do
     expect(actor.runner_class).to eq('Legion::Extensions::Llm::Bedrock::Runners::FleetWorker')
     expect(actor.runner_function).to eq('handle_fleet_request')
