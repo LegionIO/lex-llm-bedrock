@@ -59,6 +59,8 @@ module Legion
           @registry_publisher ||= Legion::Extensions::Llm::RegistryPublisher.new(provider_family: PROVIDER_FAMILY)
         end
 
+        DEFAULT_CAPABILITIES = %i[completion streaming embedding].freeze
+
         def self.discover_instances
           candidates = {}
           discover_env_bearer(candidates)
@@ -66,7 +68,23 @@ module Legion
           discover_env_sigv4(candidates)
           discover_settings(candidates)
           discover_broker(candidates)
-          CredentialSources.dedup_credentials(candidates).transform_values { |config| sanitize_instance_config(config) }
+          CredentialSources.dedup_credentials(candidates)
+                           .reject { |_, config| unresolved_credential?(config) }
+                           .transform_values do |config|
+            sanitized = sanitize_instance_config(config)
+            sanitized[:capabilities] ||= DEFAULT_CAPABILITIES.dup
+            sanitized[:default_model] ||= 'us.anthropic.claude-sonnet-4-6'
+            sanitized
+          end
+        end
+
+        def self.unresolved_credential?(config)
+          return false if config[:bedrock_profile]
+
+          cred = config[:bearer_token] || config[:bedrock_access_key_id] || config[:api_key]
+          return true if cred.nil?
+
+          cred.to_s.match?(%r{\A(vault|env)://})
         end
 
         def self.discover_env_bearer(candidates)
@@ -76,7 +94,9 @@ module Legion
           candidates[:env_bearer] = {
             bearer_token: bearer,
             bedrock_region: CredentialSources.env('AWS_DEFAULT_REGION') || DEFAULT_REGION,
-            tier: :cloud
+            tier: :cloud,
+            source: CredentialSources.source_tag(:env, 'AWS_BEARER_TOKEN_BEDROCK'),
+            credential_fingerprint: CredentialSources.credential_fingerprint(bearer)
           }
         end
 
@@ -88,7 +108,9 @@ module Legion
           candidates[:claude] = {
             bearer_token: claude_bearer,
             bedrock_region: CredentialSources.claude_env_value('AWS_DEFAULT_REGION') || DEFAULT_REGION,
-            tier: :cloud
+            tier: :cloud,
+            source: CredentialSources.source_tag(:file, '~/.claude/settings.json', 'AWS_BEARER_TOKEN_BEDROCK'),
+            credential_fingerprint: CredentialSources.credential_fingerprint(claude_bearer)
           }
         end
 
@@ -100,7 +122,10 @@ module Legion
           candidates[:env_sigv4] = {
             api_key: akid, bedrock_access_key_id: akid, bedrock_secret_access_key: skey,
             bedrock_session_token: CredentialSources.env('AWS_SESSION_TOKEN'),
-            bedrock_region: CredentialSources.env('AWS_DEFAULT_REGION') || DEFAULT_REGION, tier: :cloud
+            bedrock_region: CredentialSources.env('AWS_DEFAULT_REGION') || DEFAULT_REGION,
+            tier: :cloud,
+            source: CredentialSources.source_tag(:env, 'AWS_ACCESS_KEY_ID'),
+            credential_fingerprint: CredentialSources.credential_fingerprint(akid)
           }.compact
         end
 
@@ -109,12 +134,19 @@ module Legion
           return unless settings.is_a?(Hash) && !settings.empty?
 
           default_config = dedup_config(normalize_instance_config(settings))
-          candidates[:settings] = default_config.merge(tier: :cloud) unless default_config.empty?
+          unless default_config.empty?
+            default_config[:source] = CredentialSources.source_tag(:settings, 'extensions.llm.bedrock')
+            default_config[:credential_fingerprint] = CredentialSources.config_fingerprint(default_config)
+            candidates[:settings] = default_config.merge(tier: :cloud)
+          end
 
           settings_instances(settings).each do |name, config|
             next unless config.is_a?(Hash)
 
-            candidates[name.to_sym] = dedup_config(normalize_instance_config(config)).merge(tier: :cloud)
+            normalized = dedup_config(normalize_instance_config(config))
+            normalized[:source] = CredentialSources.source_tag(:settings, "extensions.llm.bedrock.instances.#{name}")
+            normalized[:credential_fingerprint] = CredentialSources.config_fingerprint(normalized)
+            candidates[name.to_sym] = normalized.merge(tier: :cloud)
           end
         end
 
@@ -122,7 +154,11 @@ module Legion
           return unless defined?(Legion::Identity::Broker)
 
           broker_creds = broker_aws_credentials
-          candidates[:broker] = broker_creds.merge(tier: :cloud) if broker_creds
+          return unless broker_creds
+
+          broker_creds[:source] = CredentialSources.source_tag(:broker, 'identity', 'aws')
+          broker_creds[:credential_fingerprint] = CredentialSources.config_fingerprint(broker_creds)
+          candidates[:broker] = broker_creds.merge(tier: :cloud)
         end
 
         # Scan Claude config env hash for any key containing all of

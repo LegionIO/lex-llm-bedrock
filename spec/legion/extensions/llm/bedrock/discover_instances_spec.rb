@@ -23,11 +23,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
       allow(credential_sources).to receive(:env).with('AWS_DEFAULT_REGION').and_return('us-west-2')
 
       expect(discover).to include(
-        env_bearer: {
+        env_bearer: a_hash_including(
           bearer_token: 'tok-env',
           bedrock_region: 'us-west-2',
           tier: :cloud
-        }
+        )
       )
     end
 
@@ -50,11 +50,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
         .with('AWS_DEFAULT_REGION').and_return('eu-west-1')
 
       expect(discover).to include(
-        claude: {
+        claude: a_hash_including(
           bearer_token: 'tok-claude',
           bedrock_region: 'eu-west-1',
           tier: :cloud
-        }
+        )
       )
     end
 
@@ -85,13 +85,13 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
       allow(credential_sources).to receive(:env).with('AWS_DEFAULT_REGION').and_return('ap-southeast-1')
 
       expect(discover).to include(
-        env_sigv4: {
+        env_sigv4: a_hash_including(
           bedrock_access_key_id: 'AKID123',
           bedrock_secret_access_key: 'secret456',
           bedrock_session_token: 'session789',
           bedrock_region: 'ap-southeast-1',
           tier: :cloud
-        }
+        )
       )
     end
 
@@ -122,11 +122,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
         .and_return({ bedrock_region: 'us-east-1', bedrock_access_key_id: 'AKID-SETTINGS' })
 
       expect(discover).to include(
-        settings: {
+        settings: a_hash_including(
           bedrock_region: 'us-east-1',
           bedrock_access_key_id: 'AKID-SETTINGS',
           tier: :cloud
-        }
+        )
       )
     end
 
@@ -192,13 +192,13 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
       stub_const('Legion::Identity::Broker', broker)
 
       expect(discover).to include(
-        broker: {
+        broker: a_hash_including(
           bedrock_access_key_id: 'AKID-BROKER',
           bedrock_secret_access_key: 'SECRET-BROKER',
           bedrock_session_token: 'SES-BROKER',
           bedrock_region: 'us-gov-west-1',
           tier: :cloud
-        }
+        )
       )
     end
 

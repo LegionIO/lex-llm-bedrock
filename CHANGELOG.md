@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.8 - 2026-05-13
+
+- Auto-prefix `us.` on `inference_profile_id` for Anthropic, Meta, Mistral, Cohere, and AI21 models at API call time.
+- Filter empty content blocks from messages to satisfy Bedrock validation.
+- Wire Bearer token into AWS SDK via `Aws::StaticTokenProvider` to eliminate IMDS timeout on startup.
+- Add `source` and `credential_fingerprint` fields to all discovered instances.
+- Inject default capabilities into all discovered instances.
+- Add static `CONTEXT_WINDOWS` map; `infer_limits` reads from `model_detail` cache instead of live API.
+- Override `fetch_model_detail` to return static context window data without a network call.
+- Cache live results in `discover_offerings`.
+- Add `unresolved_credential?` filter — instances with `vault://` or `env://` credential refs are skipped during registration.
+- Inject `default_model` into all discovered instances.
+
 ## 0.3.7 - 2026-05-12
 
 - Use `Legion::Logging::Helper` explicitly across Bedrock provider, actor, and fleet runner logging surfaces.

@@ -26,6 +26,28 @@ module Legion
 
           ALIASES = STATIC_MODELS.to_h { |entry| [entry.fetch(:alias), entry.fetch(:model)] }.freeze
 
+          CONTEXT_WINDOWS = {
+            'anthropic.claude-sonnet-4' => 200_000,
+            'anthropic.claude-haiku-4' => 200_000,
+            'anthropic.claude-opus-4' => 200_000,
+            'anthropic.claude-3-5-sonnet' => 200_000,
+            'anthropic.claude-3-5-haiku' => 200_000,
+            'anthropic.claude-3-haiku' => 200_000,
+            'anthropic.claude-3-opus' => 200_000,
+            'anthropic.claude-3-sonnet' => 200_000,
+            'meta.llama3' => 128_000,
+            'meta.llama3-1' => 128_000,
+            'meta.llama3-2' => 128_000,
+            'meta.llama3-3' => 128_000,
+            'mistral.mistral-large' => 128_000,
+            'mistral.mistral-small' => 128_000,
+            'amazon.titan-text-express' => 8_192,
+            'amazon.titan-text-premier' => 32_000,
+            'amazon.nova-pro' => 300_000,
+            'amazon.nova-lite' => 300_000,
+            'amazon.nova-micro' => 128_000
+          }.freeze
+
           class << self
             def slug = 'bedrock'
 
@@ -38,6 +60,7 @@ module Legion
                 bedrock_session_token
                 bedrock_profile
                 bedrock_stub_responses
+                bearer_token
               ]
             end
 
@@ -50,6 +73,15 @@ module Legion
 
             def resolve_model_id(model_id, config: nil) # rubocop:disable Lint/UnusedMethodArgument
               ALIASES.fetch(model_id.to_s, model_id.to_s)
+            end
+
+            INFERENCE_PROFILE_PREFIXES = %w[anthropic. meta. mistral. cohere. ai21.].freeze
+
+            def inference_profile_id(model)
+              return model if model.start_with?('us.', 'eu.', 'ap.', 'arn:')
+              return model unless INFERENCE_PROFILE_PREFIXES.any? { |p| model.start_with?(p) }
+
+              "us.#{model}"
             end
           end
 
@@ -86,15 +118,19 @@ module Legion
 
           def discover_offerings(live: false, **filters)
             unless live
+              return @cached_offerings if @cached_offerings&.any?
+
               log.debug { 'bedrock.provider.discover_offerings: returning static catalog' }
               return static_offerings(**filters)
             end
 
             log.info { "bedrock.provider.discover_offerings: listing foundation models (region=#{region})" }
             response = bedrock_client.list_foundation_models(**filters)
-            Array(value(response, :model_summaries)).map { |summary| offering_from_summary(summary) }.tap do |offerings|
-              log.info { "bedrock.provider.discover_offerings: found #{offerings.size} models" }
+            @cached_offerings = Array(value(response, :model_summaries)).map do |summary|
+              offering_from_summary(summary)
             end
+            log.info { "bedrock.provider.discover_offerings: found #{@cached_offerings.size} models" }
+            @cached_offerings
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -194,7 +230,7 @@ module Legion
             log.debug { "bedrock.provider.count_tokens: model=#{model_id(model)}" }
             request = Utils.deep_merge(
               {
-                model_id: model_id(model),
+                model_id: self.class.inference_profile_id(model_id(model)),
                 input: { converse: { messages: format_messages(messages), system: system_blocks(system) }.compact }
               },
               params
@@ -283,6 +319,7 @@ module Legion
 
           def build_offering(model:, model_family:, usage_type:, instance_id: :default, alias_name: nil,
                              capabilities: nil, metadata: {})
+            limits = infer_limits(model)
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :bedrock,
               instance_id: instance_id,
@@ -291,8 +328,22 @@ module Legion
               model: model,
               usage_type: usage_type,
               capabilities: capabilities || default_capabilities(model),
+              limits: limits,
               metadata: metadata.merge(model_family: model_family, alias: alias_name).compact
             )
+          end
+
+          def infer_limits(model)
+            detail = model_detail(model.to_s)
+            return detail if detail.is_a?(Hash) && detail[:context_window]
+
+            ctx = CONTEXT_WINDOWS.find { |prefix, _| model.to_s.start_with?(prefix) }&.last
+            ctx ? { context_window: ctx } : {}
+          end
+
+          def fetch_model_detail(model_name)
+            ctx = CONTEXT_WINDOWS.find { |prefix, _| model_name.start_with?(prefix) }&.last
+            ctx ? { context_window: ctx } : nil
           end
 
           def configured_transport(default)
@@ -305,7 +356,7 @@ module Legion
 
           def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:)
             {
-              model_id: model_id(model),
+              model_id: self.class.inference_profile_id(model_id(model)),
               messages: format_messages(messages.reject { |message| message.role == :system }),
               system: format_system(messages),
               inference_config: { temperature: temperature, max_tokens: max_tokens || model_max_tokens(model) }.compact,
@@ -314,11 +365,11 @@ module Legion
           end
 
           def format_messages(messages)
-            messages.map do |message|
-              {
-                role: bedrock_role(message.role),
-                content: content_blocks(message.content)
-              }
+            messages.filter_map do |message|
+              blocks = content_blocks(message.content)
+              next if blocks.empty?
+
+              { role: bedrock_role(message.role), content: blocks }
             end
           end
 
@@ -339,7 +390,13 @@ module Legion
           end
 
           def content_blocks(content)
-            raw_content(content) || [{ text: content_text(content) }]
+            raw = raw_content(content)
+            return raw if raw
+
+            text = content_text(content)
+            return [] if text.strip.empty?
+
+            [{ text: text }]
           end
 
           def raw_content(content)
@@ -477,12 +534,23 @@ module Legion
           end
 
           def client_options
-            {
+            opts = {
               region: region,
               endpoint: config.bedrock_endpoint,
-              credentials: credentials,
               stub_responses: config.bedrock_stub_responses
-            }.compact
+            }
+
+            if bearer_token_configured?
+              opts[:token_provider] = Aws::StaticTokenProvider.new(config.bearer_token)
+            else
+              opts[:credentials] = credentials
+            end
+
+            opts.compact
+          end
+
+          def bearer_token_configured?
+            config.respond_to?(:bearer_token) && !config.bearer_token.to_s.empty?
           end
 
           def credentials

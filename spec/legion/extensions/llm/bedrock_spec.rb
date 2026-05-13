@@ -211,7 +211,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     expect(runtime_client).to have_received(:converse).with(
       hash_including(
-        model_id: 'anthropic.claude-3-haiku-20240307-v1:0',
+        model_id: 'us.anthropic.claude-3-haiku-20240307-v1:0',
         messages: [{ role: 'user', content: [{ text: 'hello' }] }],
         inference_config: { temperature: 0.2, max_tokens: 2048 }
       )
@@ -247,7 +247,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     result = provider.count_tokens(messages: [message], model: model)
 
     expect(runtime_client).to have_received(:count_tokens).with(
-      model_id: 'anthropic.claude-3-haiku-20240307-v1:0',
+      model_id: 'us.anthropic.claude-3-haiku-20240307-v1:0',
       input: { converse: { messages: [{ role: 'user', content: [{ text: 'hello' }] }] } }
     )
     expect(result).to include(input_tokens: 7)
