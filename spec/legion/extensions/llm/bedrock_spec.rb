@@ -34,6 +34,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     allow(bedrock_client).to receive(:list_foundation_models)
   end
 
+  it 'uses the shared logging helper on the extension namespace and provider' do
+    expect(described_class.singleton_class.ancestors).to include(Legion::Logging::Helper)
+    expect(described_class::Provider.ancestors).to include(Legion::Logging::Helper)
+  end
+
   it 'exposes provider defaults through the shared provider settings shape' do
     settings = described_class.default_settings
     instance = settings.dig(:instances, :default)

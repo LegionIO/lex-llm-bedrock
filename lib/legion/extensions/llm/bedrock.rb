@@ -3,6 +3,7 @@
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/bedrock/provider'
 require 'legion/extensions/llm/bedrock/version'
+require 'legion/logging/helper'
 
 module Legion
   module Extensions

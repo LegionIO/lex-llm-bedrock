@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.7 - 2026-05-12
+
+- Use `Legion::Logging::Helper` explicitly across Bedrock provider, actor, and fleet runner logging surfaces.
+- Add non-sensitive debug logging for Bedrock tool configuration and fleet request routing.
+- Report optional actor runtime load failures through `handle_exception` instead of direct warning output.
+
 ## 0.3.6 - 2026-05-08
 
 - Accept keyword arguments in `list_models` to match the base provider contract called by `discover_offerings`.
