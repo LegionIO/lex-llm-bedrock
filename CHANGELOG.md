@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.9 - 2026-05-18
+
+- Fix streaming tool call parsing: `stream_converse` now handles content_block_start/delta/stop events for tool_use blocks, capturing tool ids, names, and accumulated input JSON. Previously only text deltas were captured and tool calls were silently dropped.
+
+
 ## 0.3.8 - 2026-05-13
 
 - Auto-prefix `us.` on `inference_profile_id` for Anthropic, Meta, Mistral, Cohere, and AI21 models at API call time.
