@@ -481,17 +481,19 @@ module Legion
             current_tool_use = nil
 
             runtime_client.converse_stream(**request) do |stream|
-              stream.on_content_block_start_event do |event|
-                start = value(event, :start)
-                tool_start = value(start, :tool_use) if start
-                if tool_start
-                  current_tool_use = {
-                    tool_use_id: value(tool_start, :tool_use_id),
-                    name:        value(tool_start, :name),
-                    input_json:  +''
-                  }
+              if stream.respond_to?(:on_content_block_start_event)
+                stream.on_content_block_start_event do |event|
+                  start = value(event, :start)
+                  tool_start = value(start, :tool_use) if start
+                  if tool_start
+                    current_tool_use = {
+                      tool_use_id: value(tool_start, :tool_use_id),
+                      name: value(tool_start, :name),
+                      input_json: +''
+                    }
+                  end
                 end
-              end if stream.respond_to?(:on_content_block_start_event)
+              end
 
               stream.on_content_block_delta_event do |event|
                 delta = value(event, :delta)
@@ -511,16 +513,20 @@ module Legion
                 end
               end
 
-              stream.on_content_block_stop_event do |_event|
-                if current_tool_use
-                  tool_use_blocks << current_tool_use
-                  current_tool_use = nil
+              if stream.respond_to?(:on_content_block_stop_event)
+                stream.on_content_block_stop_event do |_event|
+                  if current_tool_use
+                    tool_use_blocks << current_tool_use
+                    current_tool_use = nil
+                  end
                 end
-              end if stream.respond_to?(:on_content_block_stop_event)
+              end
 
-              stream.on_message_stop_event do |event|
-                stop_reason = value(event, :stop_reason)
-              end if stream.respond_to?(:on_message_stop_event)
+              if stream.respond_to?(:on_message_stop_event)
+                stream.on_message_stop_event do |event|
+                  stop_reason = value(event, :stop_reason)
+                end
+              end
 
               stream.on_metadata_event { |event| final_usage = value(event, :usage) }
             end
@@ -528,13 +534,13 @@ module Legion
             tool_calls = build_stream_tool_calls(tool_use_blocks)
 
             Legion::Extensions::Llm::Message.new(
-              role:          :assistant,
-              content:       accumulated,
-              model_id:      fallback_model,
-              tool_calls:    tool_calls,
-              input_tokens:  value(final_usage, :input_tokens),
+              role: :assistant,
+              content: accumulated,
+              model_id: fallback_model,
+              tool_calls: tool_calls,
+              input_tokens: value(final_usage, :input_tokens),
               output_tokens: value(final_usage, :output_tokens),
-              stop_reason:   stop_reason
+              stop_reason: stop_reason
             )
           end
 
@@ -543,10 +549,10 @@ module Legion
 
             tool_use_blocks.to_h do |block|
               input = begin
-                        Legion::JSON.load(block[:input_json])
-                      rescue StandardError
-                        {}
-                      end
+                Legion::JSON.load(block[:input_json])
+              rescue StandardError
+                {}
+              end
               name = block[:name]
               id = block[:tool_use_id] || name
               [id, Legion::Extensions::Llm::ToolCall.new(id: id, name: name, arguments: input)]
