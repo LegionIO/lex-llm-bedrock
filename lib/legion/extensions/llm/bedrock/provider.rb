@@ -474,74 +474,84 @@ module Legion
           end
 
           def stream_converse(request, fallback_model)
-            accumulated = +''
-            final_usage = nil
-            stop_reason = nil
-            tool_use_blocks = []
-            current_tool_use = nil
+            state = { accumulated: +'', final_usage: nil, stop_reason: nil, tool_use_blocks: [], current_tool_use: nil }
 
             runtime_client.converse_stream(**request) do |stream|
-              if stream.respond_to?(:on_content_block_start_event)
-                stream.on_content_block_start_event do |event|
-                  start = value(event, :start)
-                  tool_start = value(start, :tool_use) if start
-                  if tool_start
-                    current_tool_use = {
-                      tool_use_id: value(tool_start, :tool_use_id),
-                      name: value(tool_start, :name),
-                      input_json: +''
-                    }
-                  end
-                end
-              end
-
-              stream.on_content_block_delta_event do |event|
-                delta = value(event, :delta)
-                text = value(delta, :text)
-                if text
-                  accumulated << text
-                  if block_given?
-                    yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
-                                                             model_id: fallback_model)
-                  end
-                end
-
-                tool_input = value(delta, :tool_use)
-                if tool_input && current_tool_use
-                  input_chunk = value(tool_input, :input)
-                  current_tool_use[:input_json] << input_chunk.to_s if input_chunk
-                end
-              end
-
-              if stream.respond_to?(:on_content_block_stop_event)
-                stream.on_content_block_stop_event do |_event|
-                  if current_tool_use
-                    tool_use_blocks << current_tool_use
-                    current_tool_use = nil
-                  end
-                end
-              end
-
-              if stream.respond_to?(:on_message_stop_event)
-                stream.on_message_stop_event do |event|
-                  stop_reason = value(event, :stop_reason)
-                end
-              end
-
-              stream.on_metadata_event { |event| final_usage = value(event, :usage) }
+              wire_stream_handlers(stream, state, fallback_model) { |chunk| yield chunk if block_given? }
             end
-
-            tool_calls = build_stream_tool_calls(tool_use_blocks)
 
             Legion::Extensions::Llm::Message.new(
               role: :assistant,
-              content: accumulated,
+              content: state[:accumulated],
               model_id: fallback_model,
-              tool_calls: tool_calls,
-              input_tokens: value(final_usage, :input_tokens),
-              output_tokens: value(final_usage, :output_tokens),
-              stop_reason: stop_reason
+              tool_calls: build_stream_tool_calls(state[:tool_use_blocks]),
+              input_tokens: value(state[:final_usage], :input_tokens),
+              output_tokens: value(state[:final_usage], :output_tokens),
+              stop_reason: state[:stop_reason]
             )
+          end
+
+          def wire_stream_handlers(stream, state, fallback_model, &)
+            wire_block_start(stream, state)
+            wire_block_delta(stream, state, fallback_model, &)
+            wire_block_stop(stream, state)
+            wire_message_stop(stream, state)
+            stream.on_metadata_event { |event| state[:final_usage] = value(event, :usage) }
+          end
+
+          def wire_block_start(stream, state)
+            return unless stream.respond_to?(:on_content_block_start_event)
+
+            stream.on_content_block_start_event do |event|
+              start = value(event, :start)
+              tool_start = value(start, :tool_use) if start
+              next unless tool_start
+
+              state[:current_tool_use] = {
+                tool_use_id: value(tool_start, :tool_use_id),
+                name: value(tool_start, :name),
+                input_json: +''
+              }
+            end
+          end
+
+          def wire_block_delta(stream, state, fallback_model)
+            stream.on_content_block_delta_event do |event|
+              delta = value(event, :delta)
+              text = value(delta, :text)
+              if text
+                state[:accumulated] << text
+                if block_given?
+                  yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
+                                                           model_id: fallback_model)
+                end
+              end
+
+              tool_input = value(delta, :tool_use)
+              next unless tool_input && state[:current_tool_use]
+
+              input_chunk = value(tool_input, :input)
+              state[:current_tool_use][:input_json] << input_chunk.to_s if input_chunk
+            end
+          end
+
+          def wire_block_stop(stream, state)
+            return unless stream.respond_to?(:on_content_block_stop_event)
+
+            stream.on_content_block_stop_event do |_event|
+              next unless state[:current_tool_use]
+
+              state[:tool_use_blocks] << state[:current_tool_use]
+              state[:current_tool_use] = nil
+            end
+          end
+
+          def wire_message_stop(stream, state)
+            return unless stream.respond_to?(:on_message_stop_event)
+
+            stream.on_message_stop_event do |event|
+              state[:stop_reason] = value(event, :stop_reason)
+            end
           end
 
           def build_stream_tool_calls(tool_use_blocks)
