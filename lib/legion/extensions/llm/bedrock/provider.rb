@@ -476,28 +476,81 @@ module Legion
           def stream_converse(request, fallback_model)
             accumulated = +''
             final_usage = nil
+            stop_reason = nil
+            tool_use_blocks = []
+            current_tool_use = nil
 
             runtime_client.converse_stream(**request) do |stream|
-              stream.on_content_block_delta_event do |event|
-                text = value(value(event, :delta), :text)
-                next if text.nil?
+              stream.on_content_block_start_event do |event|
+                start = value(event, :start)
+                tool_start = value(start, :tool_use) if start
+                if tool_start
+                  current_tool_use = {
+                    tool_use_id: value(tool_start, :tool_use_id),
+                    name:        value(tool_start, :name),
+                    input_json:  +''
+                  }
+                end
+              end if stream.respond_to?(:on_content_block_start_event)
 
-                accumulated << text
-                if block_given?
-                  yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
-                                                           model_id: fallback_model)
+              stream.on_content_block_delta_event do |event|
+                delta = value(event, :delta)
+                text = value(delta, :text)
+                if text
+                  accumulated << text
+                  if block_given?
+                    yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
+                                                             model_id: fallback_model)
+                  end
+                end
+
+                tool_input = value(delta, :tool_use)
+                if tool_input && current_tool_use
+                  input_chunk = value(tool_input, :input)
+                  current_tool_use[:input_json] << input_chunk.to_s if input_chunk
                 end
               end
+
+              stream.on_content_block_stop_event do |_event|
+                if current_tool_use
+                  tool_use_blocks << current_tool_use
+                  current_tool_use = nil
+                end
+              end if stream.respond_to?(:on_content_block_stop_event)
+
+              stream.on_message_stop_event do |event|
+                stop_reason = value(event, :stop_reason)
+              end if stream.respond_to?(:on_message_stop_event)
+
               stream.on_metadata_event { |event| final_usage = value(event, :usage) }
             end
 
+            tool_calls = build_stream_tool_calls(tool_use_blocks)
+
             Legion::Extensions::Llm::Message.new(
-              role: :assistant,
-              content: accumulated,
-              model_id: fallback_model,
-              input_tokens: value(final_usage, :input_tokens),
-              output_tokens: value(final_usage, :output_tokens)
+              role:          :assistant,
+              content:       accumulated,
+              model_id:      fallback_model,
+              tool_calls:    tool_calls,
+              input_tokens:  value(final_usage, :input_tokens),
+              output_tokens: value(final_usage, :output_tokens),
+              stop_reason:   stop_reason
             )
+          end
+
+          def build_stream_tool_calls(tool_use_blocks)
+            return nil if tool_use_blocks.empty?
+
+            tool_use_blocks.to_h do |block|
+              input = begin
+                        Legion::JSON.load(block[:input_json])
+                      rescue StandardError
+                        {}
+                      end
+              name = block[:name]
+              id = block[:tool_use_id] || name
+              [id, Legion::Extensions::Llm::ToolCall.new(id: id, name: name, arguments: input)]
+            end
           end
 
           def parse_embedding_response(response, model:)
