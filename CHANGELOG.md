@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.10 - 2026-05-21
+
+- Add `default_transport`/`default_tier` class declarations, remove `configured_transport`/`configured_tier`
+- Add `model_allowed?` filtering in `discover_offerings` (handles ModelOffering objects)
+- Move `DEFAULT_REGION` to settings[:region]
+- Default tier corrected from :frontier to :cloud
+- Identity headers included via base provider
+
+
 ## 0.3.9 - 2026-05-18
 
 - Fix streaming tool call parsing: `stream_converse` now handles content_block_start/delta/stop events for tool_use blocks, capturing tool ids, names, and accumulated input JSON. Previously only text deltas were captured and tool calls were silently dropped.
