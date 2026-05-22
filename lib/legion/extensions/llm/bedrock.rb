@@ -23,7 +23,8 @@ module Legion
             family: PROVIDER_FAMILY,
             instance: {
               default_model: 'us.anthropic.claude-sonnet-4-6',
-              tier: :frontier,
+              region: 'us-east-1',
+              tier: :cloud,
               transport: :aws_sdk,
               credentials: {
                 bearer_token: nil,

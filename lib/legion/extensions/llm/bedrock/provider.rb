@@ -14,8 +14,6 @@ module Legion
         class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
           include Legion::Logging::Helper
 
-          DEFAULT_REGION = 'us-east-1'
-
           STATIC_MODELS = [
             { model: 'anthropic.claude-3-haiku-20240307-v1:0', alias: 'claude-3-haiku' },
             { model: 'amazon.titan-text-express-v1', alias: 'titan-text-express' },
@@ -50,6 +48,8 @@ module Legion
 
           class << self
             def slug = 'bedrock'
+            def default_transport = :aws_sdk
+            def default_tier = :cloud
 
             def configuration_options
               %i[
@@ -113,7 +113,7 @@ module Legion
           def count_tokens_url = 'CountTokens'
 
           def region
-            config.bedrock_region || DEFAULT_REGION
+            config.bedrock_region || settings[:region] || 'us-east-1'
           end
 
           def discover_offerings(live: false, **filters)
@@ -126,8 +126,12 @@ module Legion
 
             log.info { "bedrock.provider.discover_offerings: listing foundation models (region=#{region})" }
             response = bedrock_client.list_foundation_models(**filters)
-            @cached_offerings = Array(value(response, :model_summaries)).map do |summary|
-              offering_from_summary(summary)
+            @cached_offerings = Array(value(response, :model_summaries)).filter_map do |summary|
+              offering = offering_from_summary(summary)
+              model_id = offering.respond_to?(:model) ? offering.model : (offering[:model] || offering[:id])
+              next unless model_allowed?(model_id.to_s)
+
+              offering
             end
             log.info { "bedrock.provider.discover_offerings: found #{@cached_offerings.size} models" }
             @cached_offerings
@@ -323,8 +327,8 @@ module Legion
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :bedrock,
               instance_id: instance_id,
-              transport: configured_transport(:aws_sdk),
-              tier: configured_tier(:frontier),
+              transport: offering_transport,
+              tier: offering_tier,
               model: model,
               usage_type: usage_type,
               capabilities: capabilities || default_capabilities(model),
@@ -344,14 +348,6 @@ module Legion
           def fetch_model_detail(model_name)
             ctx = CONTEXT_WINDOWS.find { |prefix, _| model_name.start_with?(prefix) }&.last
             ctx ? { context_window: ctx } : nil
-          end
-
-          def configured_transport(default)
-            config.respond_to?(:transport) ? config.transport : default
-          end
-
-          def configured_tier(default)
-            config.respond_to?(:tier) ? config.tier : default
           end
 
           def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:)
