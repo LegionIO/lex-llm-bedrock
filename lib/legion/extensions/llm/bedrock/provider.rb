@@ -622,8 +622,19 @@ module Legion
             return Aws::SharedCredentials.new(profile_name: config.bedrock_profile) if config.bedrock_profile
             return nil unless config.bedrock_access_key_id
 
+            if static_credentials_blocked?
+              raise SecurityError,
+                    'Static AWS credentials are disabled (security.block_static_aws_credentials=true); use IAM roles'
+            end
+            log.warn('[bedrock] Using static AWS credentials — prefer IAM roles for production')
             Aws::Credentials.new(config.bedrock_access_key_id, config.bedrock_secret_access_key,
                                  config.bedrock_session_token)
+          end
+
+          def static_credentials_blocked?
+            return false unless defined?(::Legion::Settings)
+
+            ::Legion::Settings.dig(:extensions, :llm, :security, :block_static_aws_credentials) == true
           end
 
           def credential_source
