@@ -470,13 +470,14 @@ module Legion
           end
 
           def stream_converse(request, fallback_model)
-            state = { accumulated: +'', final_usage: nil, stop_reason: nil, tool_use_blocks: [], current_tool_use: nil }
+            state = { accumulated: +'', thinking: +'', final_usage: nil, stop_reason: nil,
+                      tool_use_blocks: [], current_tool_use: nil, in_thinking: false }
 
             runtime_client.converse_stream(**request) do |stream|
               wire_stream_handlers(stream, state, fallback_model) { |chunk| yield chunk if block_given? }
             end
 
-            Legion::Extensions::Llm::Message.new(
+            msg_attrs = {
               role: :assistant,
               content: state[:accumulated],
               model_id: fallback_model,
@@ -484,7 +485,9 @@ module Legion
               input_tokens: value(state[:final_usage], :input_tokens),
               output_tokens: value(state[:final_usage], :output_tokens),
               stop_reason: state[:stop_reason]
-            )
+            }
+            msg_attrs[:thinking] = state[:thinking] unless state[:thinking].empty?
+            Legion::Extensions::Llm::Message.new(**msg_attrs)
           end
 
           def wire_stream_handlers(stream, state, fallback_model, &)
@@ -500,6 +503,13 @@ module Legion
 
             stream.on_content_block_start_event do |event|
               start = value(event, :start)
+
+              if value(start, :thinking)
+                state[:in_thinking] = true
+                next
+              end
+
+              state[:in_thinking] = false
               tool_start = value(start, :tool_use) if start
               next unless tool_start
 
@@ -516,10 +526,14 @@ module Legion
               delta = value(event, :delta)
               text = value(delta, :text)
               if text
-                state[:accumulated] << text
-                if block_given?
-                  yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
-                                                           model_id: fallback_model)
+                if state[:in_thinking]
+                  state[:thinking] << text
+                else
+                  state[:accumulated] << text
+                  if block_given?
+                    yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
+                                                             model_id: fallback_model)
+                  end
                 end
               end
 
