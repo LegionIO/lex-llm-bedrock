@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.12 - 2026-06-02
+
+### Fixed
+- **ContentBlock union validation errors** — Removed `cache_control` from text blocks, system blocks, and tool definitions. The Bedrock Converse SDK's `ContentBlock` is a strict union (text|image|tool_use|...); adding `cache_control` as a sibling key triggered "multiple values provided to union" and "unexpected value" ArgumentError (provider.rb)
+- **Assistant tool_call messages rejected by SDK** — Messages with tool calls were sent as raw content blocks with `:type`/`:content` keys. Now emits proper `{ tool_use: { tool_use_id, name, input } }` blocks via new `build_content_blocks`/`assistant_tool_use_blocks` methods (provider.rb)
+- **PROMPT-CACHE-01 reverted** — Bedrock Converse API does not support `cache_control` on text/document/image blocks. The markers added in 0.3.11 are removed (provider.rb)
+
+### Added
+- **Per-provider discovery refresh actor** — New `actors/discovery_refresh.rb` that only refreshes Bedrock models, avoiding coupling to other providers' discovery cycles
+
 ## 0.3.11 - 2026-05-31
 
 ### Security

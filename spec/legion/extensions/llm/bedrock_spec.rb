@@ -227,7 +227,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     provider.chat(messages: [message], model: model, tools: { lookup: tool('lookup') },
                   tool_prefs: { choice: :lookup })
 
-    expect(runtime_client).to have_received(:converse).with(hash_including(tool_config: cache_lookup_tool_config))
+    expect(runtime_client).to have_received(:converse).with(hash_including(tool_config: lookup_tool_config))
   end
 
   it 'streams Converse deltas through chunks and returns an accumulated message' do
@@ -273,8 +273,10 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   # Prompt caching tests (issue #8)
+  # Note: Bedrock Converse API does not support cache_control on text/image/document blocks.
+  # The cache_control markers were removed to fix SDK union validation errors.
 
-  it 'includes cache_control marker in system blocks' do
+  it 'renders system blocks without cache_control' do
     system_msg = Legion::Extensions::Llm::Message.new(role: :system, content: 'be helpful')
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
@@ -284,12 +286,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     expect(runtime_client).to have_received(:converse).with(
       hash_including(
-        system: [{ text: 'be helpful', cache_control: { type: 'cache_control' } }]
+        system: [{ text: 'be helpful' }]
       )
     )
   end
 
-  it 'adds cache_control to tool definitions in tool_config' do
+  it 'renders tool definitions without cache_control' do
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
     )
@@ -301,16 +303,14 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       hash_including(
         tool_config: hash_including(
           tools: [
-            hash_including(
-              cache_control: { type: 'cache_control' }
-            )
+            hash_including(tool_spec: hash_including(name: 'lookup'))
           ]
         )
       )
     )
   end
 
-  it 'adds cache_control to early message blocks but not the last message' do
+  it 'renders message blocks without cache_control' do
     msgs = [
       Legion::Extensions::Llm::Message.new(role: :user, content: 'msg1'),
       Legion::Extensions::Llm::Message.new(role: :assistant, content: 'reply1'),
@@ -327,11 +327,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(runtime_client).to have_received(:converse).with(
       hash_including(
         messages: [
-          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
-          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
-          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
-          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
-          hash_including(content: [hash_not_including(:cache_control)])
+          hash_including(content: [hash_including(text: 'msg1')]),
+          hash_including(content: [hash_including(text: 'reply1')]),
+          hash_including(content: [hash_including(text: 'msg2')]),
+          hash_including(content: [hash_including(text: 'reply2')]),
+          hash_including(content: [hash_including(text: 'msg3')])
         ]
       )
     )
@@ -426,22 +426,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
             description: 'look up a value',
             input_schema: { json: { type: 'object', properties: {} } }
           }
-        }
-      ],
-      tool_choice: { tool: { name: 'lookup' } }
-    }
-  end
-
-  def cache_lookup_tool_config
-    {
-      tools: [
-        {
-          tool_spec: {
-            name: 'lookup',
-            description: 'look up a value',
-            input_schema: { json: { type: 'object', properties: {} } }
-          },
-          cache_control: { type: 'cache_control' }
         }
       ],
       tool_choice: { tool: { name: 'lookup' } }
