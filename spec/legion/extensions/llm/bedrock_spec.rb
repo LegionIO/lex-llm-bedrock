@@ -386,8 +386,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   it 'parses cache metrics from streaming response metadata' do
     stream = FakeConverseStream.new(text: 'ok', usage: { input_tokens: 30, output_tokens: 10,
-                                                        cache_read_input_tokens: 20,
-                                                        cache_creation_input_tokens: 10 })
+                                                         cache_read_input_tokens: 20,
+                                                         cache_creation_input_tokens: 10 })
     allow(runtime_client).to receive(:converse_stream).and_yield(stream)
 
     result = provider.stream(messages: [message], model: model)

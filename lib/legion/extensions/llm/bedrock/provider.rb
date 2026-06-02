@@ -380,7 +380,7 @@ module Legion
 
           def add_cache_control_to_blocks(blocks)
             blocks.map do |block|
-              block.dup.merge(cache_control: { type: "cache_control" })
+              block.dup.merge(cache_control: { type: 'cache_control' })
             end
           end
 
@@ -393,7 +393,7 @@ module Legion
           def system_blocks(system)
             return nil if system.to_s.empty?
 
-            [{ text: system, cache_control: { type: "cache_control" } }]
+            [{ text: system, cache_control: { type: 'cache_control' } }]
           end
 
           def bedrock_role(role)
@@ -436,7 +436,7 @@ module Legion
           end
 
           def tool_definition_with_cache(tool)
-            tool_definition(tool).merge(cache_control: { type: "cache_control" })
+            tool_definition(tool).merge(cache_control: { type: 'cache_control' })
           end
 
           def tool_definition(tool)
@@ -608,13 +608,13 @@ module Legion
           def cache_read_tokens(usage)
             return nil if usage.nil?
 
-            value(usage, :cache_read_input_tokens) || value(usage, "cache_read_input_tokens")
+            value(usage, :cache_read_input_tokens) || value(usage, 'cache_read_input_tokens')
           end
 
           def cache_write_tokens(usage)
             return nil if usage.nil?
 
-            value(usage, :cache_creation_input_tokens) || value(usage, "cache_creation_input_tokens")
+            value(usage, :cache_creation_input_tokens) || value(usage, 'cache_creation_input_tokens')
           end
 
           def parse_embedding_response(response, model:)
