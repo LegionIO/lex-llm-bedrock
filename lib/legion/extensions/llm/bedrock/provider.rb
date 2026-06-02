@@ -377,7 +377,7 @@ module Legion
           def format_messages(messages)
             total = messages.size
             messages.filter_map.with_index do |message, idx|
-              blocks = message.role == :tool ? tool_result_blocks(message) : content_blocks(message.content)
+              blocks = build_content_blocks(message)
               next if blocks.empty?
 
               cache_blocks = should_cache_message?(idx, total) ? add_cache_control_to_blocks(blocks) : blocks
@@ -403,9 +403,10 @@ module Legion
           end
 
           def add_cache_control_to_blocks(blocks)
-            blocks.map do |block|
-              block.dup.merge(cache_control: { type: 'cache_control' })
-            end
+            # Bedrock Converse API does not support cache_control on text/image/document blocks.
+            # Only tool_use blocks support it via the InputMember cache_control field.
+            # Return blocks unchanged to avoid SDK union validation errors.
+            blocks
           end
 
           def format_system(messages)
@@ -417,11 +418,39 @@ module Legion
           def system_blocks(system)
             return nil if system.to_s.empty?
 
-            [{ text: system, cache_control: { type: 'cache_control' } }]
+            [{ text: system }]
           end
 
           def bedrock_role(role)
             role == :assistant ? 'assistant' : 'user'
+          end
+
+          def build_content_blocks(message)
+            return tool_result_blocks(message) if message.role == :tool
+
+            # Assistant messages with tool calls: build text + tool_use blocks
+            if message.role == :assistant && message.tool_call?
+              return assistant_tool_use_blocks(message)
+            end
+
+            content_blocks(message.content)
+          end
+
+          def assistant_tool_use_blocks(message)
+            blocks = []
+            text = content_text(message.content)
+            blocks << { text: text } if text && !text.strip.empty?
+
+            message.tool_calls.each do |call|
+              blocks << {
+                tool_use: {
+                  tool_use_id: call.id,
+                  name: call.name,
+                  input: call.arguments || {}
+                }
+              }
+            end
+            blocks
           end
 
           def content_blocks(content)
@@ -493,7 +522,7 @@ module Legion
           end
 
           def tool_definition_with_cache(tool)
-            tool_definition(tool).merge(cache_control: { type: 'cache_control' })
+            tool_definition(tool)
           end
 
           def tool_definition(tool)
