@@ -77,11 +77,24 @@ module Legion
 
             INFERENCE_PROFILE_PREFIXES = %w[anthropic. meta. mistral. cohere. ai21.].freeze
 
-            def inference_profile_id(model)
+            def inference_profile_id(model, region: nil)
               return model if model.start_with?('us.', 'eu.', 'ap.', 'arn:')
               return model unless INFERENCE_PROFILE_PREFIXES.any? { |p| model.start_with?(p) }
 
-              "us.#{model}"
+              prefix = region ? region_prefix(region) : 'us'
+              "#{prefix}.#{model}"
+            end
+
+            # Region-based inference profile prefix mapping.
+            # Bare model IDs (e.g. anthropic.claude-sonnet-4) get the region prefix.
+            REGION_PREFIX = {
+              'us-east-1' => 'us', 'us-east-2' => 'us', 'us-west-1' => 'us', 'us-west-2' => 'us',
+              'eu-central-1' => 'eu', 'eu-west-1' => 'eu', 'eu-west-2' => 'eu', 'eu-west-3' => 'eu',
+              'ap-south-1' => 'ap', 'ap-southeast-1' => 'ap', 'ap-southeast-2' => 'ap', 'ap-northeast-1' => 'ap'
+            }.freeze
+
+            def region_prefix(region)
+              REGION_PREFIX.fetch(region.to_s, 'us')
             end
           end
 
@@ -234,7 +247,7 @@ module Legion
             log.debug { "bedrock.provider.count_tokens: model=#{model_id(model)}" }
             request = Utils.deep_merge(
               {
-                model_id: self.class.inference_profile_id(model_id(model)),
+                model_id: self.class.inference_profile_id(model_id(model), region: region),
                 input: { converse: { messages: format_messages(messages), system: system_blocks(system) }.compact }
               },
               params
@@ -350,22 +363,48 @@ module Legion
             ctx ? { context_window: ctx } : nil
           end
 
-          def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:)
+          def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:, guardrail_config: nil)
             {
-              model_id: self.class.inference_profile_id(model_id(model)),
+              model_id: self.class.inference_profile_id(model_id(model), region: region),
               messages: format_messages(messages.reject { |message| message.role == :system }),
               system: format_system(messages),
               inference_config: { temperature: temperature, max_tokens: max_tokens || model_max_tokens(model) }.compact,
-              tool_config: format_tool_config(tools, tool_prefs)
+              tool_config: format_tool_config(tools, tool_prefs),
+              guardrail_config: guardrail_config
             }.compact
           end
 
           def format_messages(messages)
-            messages.filter_map do |message|
-              blocks = content_blocks(message.content)
+            total = messages.size
+            messages.filter_map.with_index do |message, idx|
+              blocks = message.role == :tool ? tool_result_blocks(message) : content_blocks(message.content)
               next if blocks.empty?
 
-              { role: bedrock_role(message.role), content: blocks }
+              cache_blocks = should_cache_message?(idx, total) ? add_cache_control_to_blocks(blocks) : blocks
+              { role: bedrock_role(message.role), content: cache_blocks }
+            end
+          end
+
+          def tool_result_blocks(message)
+            return [] unless message.tool_result?
+
+            [{
+              type: 'tool_result',
+              tool_use: { tool_use_id: message.tool_call_id },
+              content: [{ type: 'text', text: message.tool_results.to_s }]
+            }]
+          end
+
+          def should_cache_message?(index, total)
+            # Cache first 4 messages, never the last message
+            return false if index == total - 1
+
+            index < 4
+          end
+
+          def add_cache_control_to_blocks(blocks)
+            blocks.map do |block|
+              block.dup.merge(cache_control: { type: 'cache_control' })
             end
           end
 
@@ -378,7 +417,7 @@ module Legion
           def system_blocks(system)
             return nil if system.to_s.empty?
 
-            [{ text: system }]
+            [{ text: system, cache_control: { type: 'cache_control' } }]
           end
 
           def bedrock_role(role)
@@ -389,10 +428,43 @@ module Legion
             raw = raw_content(content)
             return raw if raw
 
+            return image_blocks(content) if content.respond_to?(:attachments) && !content.attachments.empty?
+
             text = content_text(content)
             return [] if text.strip.empty?
 
             [{ text: text }]
+          end
+
+          def image_blocks(content)
+            blocks = []
+            text = content_text(content)
+            blocks << { text: text } if text.strip.present?
+
+            content.attachments.each do |attachment|
+              if attachment.is_a?(Legion::Extensions::Llm::Content::ImageAttachment)
+                blocks << format_image_attachment(attachment)
+              end
+            end
+            blocks
+          end
+
+          def format_image_attachment(attachment)
+            {
+              image: {
+                format: image_format(attachment.format),
+                source: { bytes: attachment.data }
+              }
+            }
+          end
+
+          def image_format(fmt)
+            case fmt.to_s.downcase
+            when 'jpeg', 'jpg' then 'jpeg'
+            when 'png' then 'png'
+            when 'gif' then 'gif'
+            when 'webp' then 'webp'
+            end || 'jpeg'
           end
 
           def raw_content(content)
@@ -414,7 +486,14 @@ module Legion
               "bedrock.provider.tools: formatting tools=#{tools.keys.map(&:to_s).sort.join(',')} " \
                 "tool_choice=#{tool_choice_label(tool_prefs)}"
             end
-            { tools: tools.values.map { |tool| tool_definition(tool) }, tool_choice: tool_choice(tool_prefs) }.compact
+            {
+              tools: tools.values.map { |tool| tool_definition_with_cache(tool) },
+              tool_choice: tool_choice(tool_prefs)
+            }.compact
+          end
+
+          def tool_definition_with_cache(tool)
+            tool_definition(tool).merge(cache_control: { type: 'cache_control' })
           end
 
           def tool_definition(tool)
@@ -465,26 +544,33 @@ module Legion
               tool_calls: parse_tool_calls(value(message, :content)),
               input_tokens: value(usage, :input_tokens),
               output_tokens: value(usage, :output_tokens),
+              cached_tokens: cache_read_tokens(usage),
+              cache_creation_tokens: cache_write_tokens(usage),
               raw: normalize_response(response)
             )
           end
 
           def stream_converse(request, fallback_model)
-            state = { accumulated: +'', final_usage: nil, stop_reason: nil, tool_use_blocks: [], current_tool_use: nil }
+            state = { accumulated: +'', thinking: +'', final_usage: nil, stop_reason: nil,
+                      tool_use_blocks: [], current_tool_use: nil, in_thinking: false }
 
             runtime_client.converse_stream(**request) do |stream|
               wire_stream_handlers(stream, state, fallback_model) { |chunk| yield chunk if block_given? }
             end
 
-            Legion::Extensions::Llm::Message.new(
+            msg_attrs = {
               role: :assistant,
               content: state[:accumulated],
               model_id: fallback_model,
               tool_calls: build_stream_tool_calls(state[:tool_use_blocks]),
               input_tokens: value(state[:final_usage], :input_tokens),
               output_tokens: value(state[:final_usage], :output_tokens),
+              cached_tokens: cache_read_tokens(state[:final_usage]),
+              cache_creation_tokens: cache_write_tokens(state[:final_usage]),
               stop_reason: state[:stop_reason]
-            )
+            }
+            msg_attrs[:thinking] = state[:thinking] unless state[:thinking].empty?
+            Legion::Extensions::Llm::Message.new(**msg_attrs)
           end
 
           def wire_stream_handlers(stream, state, fallback_model, &)
@@ -500,6 +586,13 @@ module Legion
 
             stream.on_content_block_start_event do |event|
               start = value(event, :start)
+
+              if value(start, :thinking)
+                state[:in_thinking] = true
+                next
+              end
+
+              state[:in_thinking] = false
               tool_start = value(start, :tool_use) if start
               next unless tool_start
 
@@ -516,10 +609,14 @@ module Legion
               delta = value(event, :delta)
               text = value(delta, :text)
               if text
-                state[:accumulated] << text
-                if block_given?
-                  yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
-                                                           model_id: fallback_model)
+                if state[:in_thinking]
+                  state[:thinking] << text
+                else
+                  state[:accumulated] << text
+                  if block_given?
+                    yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
+                                                             model_id: fallback_model)
+                  end
                 end
               end
 
@@ -565,6 +662,18 @@ module Legion
             end
           end
 
+          def cache_read_tokens(usage)
+            return nil if usage.nil?
+
+            value(usage, :cache_read_input_tokens) || value(usage, 'cache_read_input_tokens')
+          end
+
+          def cache_write_tokens(usage)
+            return nil if usage.nil?
+
+            value(usage, :cache_creation_input_tokens) || value(usage, 'cache_creation_input_tokens')
+          end
+
           def parse_embedding_response(response, model:)
             body = parse_body(value(response, :body))
             vectors = body['embedding'] || body['embeddings'] || body.dig('data', 0, 'embedding')
@@ -591,11 +700,11 @@ module Legion
           end
 
           def bedrock_client
-            Aws::Bedrock::Client.new(client_options)
+            @bedrock_client ||= Aws::Bedrock::Client.new(client_options)
           end
 
           def runtime_client
-            Aws::BedrockRuntime::Client.new(client_options)
+            @runtime_client ||= Aws::BedrockRuntime::Client.new(client_options)
           end
 
           def client_options
@@ -622,8 +731,19 @@ module Legion
             return Aws::SharedCredentials.new(profile_name: config.bedrock_profile) if config.bedrock_profile
             return nil unless config.bedrock_access_key_id
 
+            if static_credentials_blocked?
+              raise SecurityError,
+                    'Static AWS credentials are disabled (security.block_static_aws_credentials=true); use IAM roles'
+            end
+            log.warn('[bedrock] Using static AWS credentials — prefer IAM roles for production')
             Aws::Credentials.new(config.bedrock_access_key_id, config.bedrock_secret_access_key,
                                  config.bedrock_session_token)
+          end
+
+          def static_credentials_blocked?
+            return false unless defined?(::Legion::Settings)
+
+            ::Legion::Settings.dig(:extensions, :llm, :security, :block_static_aws_credentials) == true
           end
 
           def credential_source
