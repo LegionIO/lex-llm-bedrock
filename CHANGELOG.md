@@ -8,6 +8,10 @@
 ### Fixed
 - **TRANSLATION-BUG-07**: Bedrock streaming now preserves thinking (chain-of-thought) blocks in the final `Message`. Previously CoT was accumulated by the wire handler but silently dropped from the returned response.
 
+### Added
+- **PROMPT-CACHE-01**: System blocks, tool definitions, and early conversation messages (first 4, never the last) now include `cache_control: { type: "cache_control" }` markers for Anthropic prompt caching via Bedrock Converse.
+- **PROMPT-CACHE-02**: Response parser extracts `cached_input_tokens` (`cache_read_input_tokens`) and `cache_creation_tokens` (`cache_creation_input_tokens`) from Bedrock usage metadata into `Message#cached_tokens` and `Message#cache_creation_tokens`.
+
 ## 0.3.10 - 2026-05-21
 
 - Add `default_transport`/`default_tier` class declarations, remove `configured_transport`/`configured_tier`

@@ -361,11 +361,26 @@ module Legion
           end
 
           def format_messages(messages)
-            messages.filter_map do |message|
+            total = messages.size
+            messages.filter_map.with_index do |message, idx|
               blocks = content_blocks(message.content)
               next if blocks.empty?
 
-              { role: bedrock_role(message.role), content: blocks }
+              cache_blocks = should_cache_message?(idx, total) ? add_cache_control_to_blocks(blocks) : blocks
+              { role: bedrock_role(message.role), content: cache_blocks }
+            end
+          end
+
+          def should_cache_message?(index, total)
+            # Cache first 4 messages, never the last message
+            return false if index == total - 1
+
+            index < 4
+          end
+
+          def add_cache_control_to_blocks(blocks)
+            blocks.map do |block|
+              block.dup.merge(cache_control: { type: "cache_control" })
             end
           end
 
@@ -378,7 +393,7 @@ module Legion
           def system_blocks(system)
             return nil if system.to_s.empty?
 
-            [{ text: system }]
+            [{ text: system, cache_control: { type: "cache_control" } }]
           end
 
           def bedrock_role(role)
@@ -414,7 +429,14 @@ module Legion
               "bedrock.provider.tools: formatting tools=#{tools.keys.map(&:to_s).sort.join(',')} " \
                 "tool_choice=#{tool_choice_label(tool_prefs)}"
             end
-            { tools: tools.values.map { |tool| tool_definition(tool) }, tool_choice: tool_choice(tool_prefs) }.compact
+            {
+              tools: tools.values.map { |tool| tool_definition_with_cache(tool) },
+              tool_choice: tool_choice(tool_prefs)
+            }.compact
+          end
+
+          def tool_definition_with_cache(tool)
+            tool_definition(tool).merge(cache_control: { type: "cache_control" })
           end
 
           def tool_definition(tool)
@@ -465,6 +487,8 @@ module Legion
               tool_calls: parse_tool_calls(value(message, :content)),
               input_tokens: value(usage, :input_tokens),
               output_tokens: value(usage, :output_tokens),
+              cached_tokens: cache_read_tokens(usage),
+              cache_creation_tokens: cache_write_tokens(usage),
               raw: normalize_response(response)
             )
           end
@@ -484,6 +508,8 @@ module Legion
               tool_calls: build_stream_tool_calls(state[:tool_use_blocks]),
               input_tokens: value(state[:final_usage], :input_tokens),
               output_tokens: value(state[:final_usage], :output_tokens),
+              cached_tokens: cache_read_tokens(state[:final_usage]),
+              cache_creation_tokens: cache_write_tokens(state[:final_usage]),
               stop_reason: state[:stop_reason]
             }
             msg_attrs[:thinking] = state[:thinking] unless state[:thinking].empty?
@@ -577,6 +603,18 @@ module Legion
               id = block[:tool_use_id] || name
               [id, Legion::Extensions::Llm::ToolCall.new(id: id, name: name, arguments: input)]
             end
+          end
+
+          def cache_read_tokens(usage)
+            return nil if usage.nil?
+
+            value(usage, :cache_read_input_tokens) || value(usage, "cache_read_input_tokens")
+          end
+
+          def cache_write_tokens(usage)
+            return nil if usage.nil?
+
+            value(usage, :cache_creation_input_tokens) || value(usage, "cache_creation_input_tokens")
           end
 
           def parse_embedding_response(response, model:)

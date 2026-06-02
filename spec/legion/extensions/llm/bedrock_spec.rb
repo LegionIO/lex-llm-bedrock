@@ -227,7 +227,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     provider.chat(messages: [message], model: model, tools: { lookup: tool('lookup') },
                   tool_prefs: { choice: :lookup })
 
-    expect(runtime_client).to have_received(:converse).with(hash_including(tool_config: lookup_tool_config))
+    expect(runtime_client).to have_received(:converse).with(hash_including(tool_config: cache_lookup_tool_config))
   end
 
   it 'streams Converse deltas through chunks and returns an accumulated message' do
@@ -272,6 +272,130 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end.to raise_error(NotImplementedError, /not standardized/)
   end
 
+  # Prompt caching tests (issue #8)
+
+  it 'includes cache_control marker in system blocks' do
+    system_msg = Legion::Extensions::Llm::Message.new(role: :system, content: 'be helpful')
+    allow(runtime_client).to receive(:converse).and_return(
+      response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
+    )
+
+    provider.chat(messages: [system_msg, message], model: model)
+
+    expect(runtime_client).to have_received(:converse).with(
+      hash_including(
+        system: [{ text: 'be helpful', cache_control: { type: 'cache_control' } }]
+      )
+    )
+  end
+
+  it 'adds cache_control to tool definitions in tool_config' do
+    allow(runtime_client).to receive(:converse).and_return(
+      response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
+    )
+
+    provider.chat(messages: [message], model: model, tools: { lookup: tool('lookup') },
+                  tool_prefs: { choice: :lookup })
+
+    expect(runtime_client).to have_received(:converse).with(
+      hash_including(
+        tool_config: hash_including(
+          tools: [
+            hash_including(
+              cache_control: { type: 'cache_control' }
+            )
+          ]
+        )
+      )
+    )
+  end
+
+  it 'adds cache_control to early message blocks but not the last message' do
+    msgs = [
+      Legion::Extensions::Llm::Message.new(role: :user, content: 'msg1'),
+      Legion::Extensions::Llm::Message.new(role: :assistant, content: 'reply1'),
+      Legion::Extensions::Llm::Message.new(role: :user, content: 'msg2'),
+      Legion::Extensions::Llm::Message.new(role: :assistant, content: 'reply2'),
+      Legion::Extensions::Llm::Message.new(role: :user, content: 'msg3')
+    ]
+    allow(runtime_client).to receive(:converse).and_return(
+      response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
+    )
+
+    provider.chat(messages: msgs, model: model)
+
+    expect(runtime_client).to have_received(:converse).with(
+      hash_including(
+        messages: [
+          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
+          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
+          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
+          hash_including(content: [hash_including(cache_control: { type: 'cache_control' })]),
+          hash_including(content: [hash_not_including(:cache_control)])
+        ]
+      )
+    )
+  end
+
+  it 'skips cache_control on the last message when there is only one message' do
+    allow(runtime_client).to receive(:converse).and_return(
+      response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
+    )
+
+    provider.chat(messages: [message], model: model)
+
+    expect(runtime_client).to have_received(:converse).with(
+      hash_including(
+        messages: [hash_including(content: [hash_not_including(:cache_control)])]
+      )
+    )
+  end
+
+  it 'parses cached_input_tokens and cache_creation_tokens from converse response usage' do
+    allow(runtime_client).to receive(:converse).and_return(
+      response(
+        output: { message: { content: [{ text: 'done' }], role: 'assistant' } },
+        usage: { input_tokens: 100, output_tokens: 50,
+                 cache_read_input_tokens: 80, cache_creation_input_tokens: 20 }
+      )
+    )
+
+    result = provider.chat(messages: [message], model: model)
+
+    expect(result.input_tokens).to eq(100)
+    expect(result.output_tokens).to eq(50)
+    expect(result.cached_tokens).to eq(80)
+    expect(result.cache_creation_tokens).to eq(20)
+  end
+
+  it 'handles missing cache fields in converse response usage gracefully' do
+    allow(runtime_client).to receive(:converse).and_return(
+      response(
+        output: { message: { content: [{ text: 'done' }], role: 'assistant' } },
+        usage: { input_tokens: 10, output_tokens: 5 }
+      )
+    )
+
+    result = provider.chat(messages: [message], model: model)
+
+    expect(result.input_tokens).to eq(10)
+    expect(result.output_tokens).to eq(5)
+    expect(result.cached_tokens).to be_nil
+    expect(result.cache_creation_tokens).to be_nil
+  end
+
+  it 'parses cache metrics from streaming response metadata' do
+    stream = FakeConverseStream.new(text: 'ok', usage: { input_tokens: 30, output_tokens: 10,
+                                                        cache_read_input_tokens: 20,
+                                                        cache_creation_input_tokens: 10 })
+    allow(runtime_client).to receive(:converse_stream).and_yield(stream)
+
+    result = provider.stream(messages: [message], model: model)
+
+    expect(result.cached_tokens).to eq(20)
+    expect(result.cache_creation_tokens).to eq(10)
+  end
+
   def response(values)
     Class.new do
       define_method(:initialize) { |payload| @payload = payload }
@@ -302,6 +426,22 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
             description: 'look up a value',
             input_schema: { json: { type: 'object', properties: {} } }
           }
+        }
+      ],
+      tool_choice: { tool: { name: 'lookup' } }
+    }
+  end
+
+  def cache_lookup_tool_config
+    {
+      tools: [
+        {
+          tool_spec: {
+            name: 'lookup',
+            description: 'look up a value',
+            input_schema: { json: { type: 'object', properties: {} } }
+          },
+          cache_control: { type: 'cache_control' }
         }
       ],
       tool_choice: { tool: { name: 'lookup' } }
