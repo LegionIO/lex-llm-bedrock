@@ -77,11 +77,24 @@ module Legion
 
             INFERENCE_PROFILE_PREFIXES = %w[anthropic. meta. mistral. cohere. ai21.].freeze
 
-            def inference_profile_id(model)
+            def inference_profile_id(model, region: nil)
               return model if model.start_with?('us.', 'eu.', 'ap.', 'arn:')
               return model unless INFERENCE_PROFILE_PREFIXES.any? { |p| model.start_with?(p) }
 
-              "us.#{model}"
+              prefix = region ? region_prefix(region) : 'us'
+              "#{prefix}.#{model}"
+            end
+
+            # Region-based inference profile prefix mapping.
+            # Bare model IDs (e.g. anthropic.claude-sonnet-4) get the region prefix.
+            REGION_PREFIX = {
+              'us-east-1' => 'us', 'us-east-2' => 'us', 'us-west-1' => 'us', 'us-west-2' => 'us',
+              'eu-central-1' => 'eu', 'eu-west-1' => 'eu', 'eu-west-2' => 'eu', 'eu-west-3' => 'eu',
+              'ap-south-1' => 'ap', 'ap-southeast-1' => 'ap', 'ap-southeast-2' => 'ap', 'ap-northeast-1' => 'ap'
+            }.freeze
+
+            def region_prefix(region)
+              REGION_PREFIX.fetch(region.to_s, 'us')
             end
           end
 
@@ -234,7 +247,7 @@ module Legion
             log.debug { "bedrock.provider.count_tokens: model=#{model_id(model)}" }
             request = Utils.deep_merge(
               {
-                model_id: self.class.inference_profile_id(model_id(model)),
+                model_id: self.class.inference_profile_id(model_id(model), region: region),
                 input: { converse: { messages: format_messages(messages), system: system_blocks(system) }.compact }
               },
               params
@@ -350,25 +363,36 @@ module Legion
             ctx ? { context_window: ctx } : nil
           end
 
-          def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:)
+          def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:, guardrail_config: nil)
             {
-              model_id: self.class.inference_profile_id(model_id(model)),
+              model_id: self.class.inference_profile_id(model_id(model), region: region),
               messages: format_messages(messages.reject { |message| message.role == :system }),
               system: format_system(messages),
               inference_config: { temperature: temperature, max_tokens: max_tokens || model_max_tokens(model) }.compact,
-              tool_config: format_tool_config(tools, tool_prefs)
+              tool_config: format_tool_config(tools, tool_prefs),
+              guardrail_config: guardrail_config
             }.compact
           end
 
           def format_messages(messages)
             total = messages.size
             messages.filter_map.with_index do |message, idx|
-              blocks = content_blocks(message.content)
+              blocks = message.role == :tool ? tool_result_blocks(message) : content_blocks(message.content)
               next if blocks.empty?
 
               cache_blocks = should_cache_message?(idx, total) ? add_cache_control_to_blocks(blocks) : blocks
               { role: bedrock_role(message.role), content: cache_blocks }
             end
+          end
+
+          def tool_result_blocks(message)
+            return [] unless message.tool_result?
+
+            [{
+              type: 'tool_result',
+              tool_use: { tool_use_id: message.tool_call_id },
+              content: [{ type: 'text', text: message.tool_results.to_s }]
+            }]
           end
 
           def should_cache_message?(index, total)
@@ -404,10 +428,43 @@ module Legion
             raw = raw_content(content)
             return raw if raw
 
+            return image_blocks(content) if content.respond_to?(:attachments) && !content.attachments.empty?
+
             text = content_text(content)
             return [] if text.strip.empty?
 
             [{ text: text }]
+          end
+
+          def image_blocks(content)
+            blocks = []
+            text = content_text(content)
+            blocks << { text: text } if text.strip.present?
+
+            content.attachments.each do |attachment|
+              if attachment.is_a?(Legion::Extensions::Llm::Content::ImageAttachment)
+                blocks << format_image_attachment(attachment)
+              end
+            end
+            blocks
+          end
+
+          def format_image_attachment(attachment)
+            {
+              image: {
+                format: image_format(attachment.format),
+                source: { bytes: attachment.data }
+              }
+            }
+          end
+
+          def image_format(fmt)
+            case fmt.to_s.downcase
+            when 'jpeg', 'jpg' then 'jpeg'
+            when 'png' then 'png'
+            when 'gif' then 'gif'
+            when 'webp' then 'webp'
+            end || 'jpeg'
           end
 
           def raw_content(content)
@@ -643,11 +700,11 @@ module Legion
           end
 
           def bedrock_client
-            Aws::Bedrock::Client.new(client_options)
+            @bedrock_client ||= Aws::Bedrock::Client.new(client_options)
           end
 
           def runtime_client
-            Aws::BedrockRuntime::Client.new(client_options)
+            @runtime_client ||= Aws::BedrockRuntime::Client.new(client_options)
           end
 
           def client_options

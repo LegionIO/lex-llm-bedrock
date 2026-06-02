@@ -22,7 +22,7 @@ module Legion
           ::Legion::Extensions::Llm.provider_settings(
             family: PROVIDER_FAMILY,
             instance: {
-              default_model: 'us.anthropic.claude-sonnet-4-6',
+              default_model: 'anthropic.claude-sonnet-4',
               region: 'us-east-1',
               tier: :cloud,
               transport: :aws_sdk,
@@ -74,7 +74,7 @@ module Legion
                            .transform_values do |config|
             sanitized = sanitize_instance_config(config)
             sanitized[:capabilities] ||= DEFAULT_CAPABILITIES.dup
-            sanitized[:default_model] ||= 'us.anthropic.claude-sonnet-4-6'
+            sanitized[:default_model] ||= 'anthropic.claude-sonnet-4'
             sanitized
           end
         end
@@ -198,6 +198,8 @@ module Legion
         end
 
         def self.normalize_instance_config(config)
+          return {} if config.nil?
+
           normalized = config.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
           normalized[:bedrock_region] ||= normalized.delete(:region)
           normalized[:bedrock_endpoint] ||= normalized.delete(:endpoint)

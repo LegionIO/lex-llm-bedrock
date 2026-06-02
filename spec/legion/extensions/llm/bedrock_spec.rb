@@ -45,7 +45,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     expect(settings[:enabled]).to be true
     expect(settings[:provider_family]).to eq(:bedrock)
-    expect(instance[:default_model]).to eq('us.anthropic.claude-sonnet-4-6')
+    expect(instance[:default_model]).to eq('anthropic.claude-sonnet-4')
     expect(instance.dig(:provider, :region)).to eq('us-east-2')
     expect(instance[:transport]).to eq(:aws_sdk)
     expect(instance.dig(:fleet, :respond_to_requests)).to be false
