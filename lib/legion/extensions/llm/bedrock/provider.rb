@@ -429,9 +429,7 @@ module Legion
             return tool_result_blocks(message) if message.role == :tool
 
             # Assistant messages with tool calls: build text + tool_use blocks
-            if message.role == :assistant && message.tool_call?
-              return assistant_tool_use_blocks(message)
-            end
+            return assistant_tool_use_blocks(message) if message.role == :assistant && message.tool_call?
 
             content_blocks(message.content)
           end
