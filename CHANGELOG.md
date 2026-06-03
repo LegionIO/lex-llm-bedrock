@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.13 - 2026-06-02
+
+### Fixed
+- **Tool call iteration crash on Bedrock escalation** — `assistant_tool_use_blocks` iterated `message.tool_calls` (a `Hash`) with `each`, which yields `[key, value]` pairs rather than `ToolCall` objects. Calling `.id` on the Array raised `NoMethodError` on every Bedrock call with tool-call history, tripping the circuit breaker and exhausting the escalation chain. Fixed by using `each_value` (provider.rb)
+
 ## 0.3.12 - 2026-06-02
 
 ### Fixed
