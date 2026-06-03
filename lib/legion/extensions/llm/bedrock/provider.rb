@@ -439,7 +439,7 @@ module Legion
             text = content_text(message.content)
             blocks << { text: text } if text && !text.strip.empty?
 
-            message.tool_calls.each do |call|
+            message.tool_calls.each_value do |call|
               blocks << {
                 tool_use: {
                   tool_use_id: call.id,
