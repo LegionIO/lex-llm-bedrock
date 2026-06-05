@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.18 - 2026-06-05
+
+### Fixed
+- **Spec and RuboCop compliance** — Verified all 54 specs pass cleanly. RuboCop auto-correct applied; 0 offenses remaining.
+
 ## 0.3.17 - 2026-06-05
 
 ### Fixed
