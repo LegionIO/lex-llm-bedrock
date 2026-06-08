@@ -77,6 +77,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(offering.metadata).to include(model_family: :anthropic, alias: 'claude-3-haiku')
   end
 
+  it 'resolves anthropic sonnet 4 alias to a versioned Bedrock model id' do
+    expect(described_class::Provider.resolve_model_id('anthropic.claude-sonnet-4'))
+      .to eq('anthropic.claude-sonnet-4-20250514-v1:0')
+  end
+
   it 'uses provider instance transport and tier in offerings' do
     configured = described_class::Provider.new(
       bedrock_region: 'us-west-2',
@@ -220,11 +225,16 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   it 'renders Bedrock tool configuration for Converse' do
+    # Use a non-Anthropic model to test Converse tool rendering directly
+    # (Anthropic models with tools route through invoke_model)
+    llama_model = Legion::Extensions::Llm::Model::Info.new(
+      id: 'meta.llama3-2-11b-instruct-v1:0', provider: :bedrock, metadata: { max_output_tokens: 2048 }
+    )
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
     )
 
-    provider.chat(messages: [message], model: model, tools: { lookup: tool('lookup') },
+    provider.chat(messages: [message], model: llama_model, tools: { lookup: tool('lookup') },
                   tool_prefs: { choice: :lookup })
 
     expect(runtime_client).to have_received(:converse).with(hash_including(tool_config: lookup_tool_config))
@@ -292,11 +302,15 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   it 'renders tool definitions without cache_control' do
+    # Use a non-Anthropic model to test Converse tool definitions directly
+    llama_model = Legion::Extensions::Llm::Model::Info.new(
+      id: 'meta.llama3-2-11b-instruct-v1:0', provider: :bedrock, metadata: { max_output_tokens: 2048 }
+    )
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
     )
 
-    provider.chat(messages: [message], model: model, tools: { lookup: tool('lookup') },
+    provider.chat(messages: [message], model: llama_model, tools: { lookup: tool('lookup') },
                   tool_prefs: { choice: :lookup })
 
     expect(runtime_client).to have_received(:converse).with(

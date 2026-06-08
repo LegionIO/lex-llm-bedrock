@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.18 - 2026-06-05
+
+### Fixed
+- **Spec and RuboCop compliance** — Verified all 54 specs pass cleanly. RuboCop auto-correct applied; 0 offenses remaining.
+
+## 0.3.17 - 2026-06-05
+
+### Fixed
+- **Unused method arguments** — Prefixed unused keyword parameters (`params`, `model`, `streaming`) in `invoke_model_chat`, `invoke_model_stream`, and `build_invoke_model_body` with underscore prefix to satisfy RuboCop `Lint/UnusedMethodArgument` (provider.rb)
+- **Keyword parameter ordering** — Moved optional keyword parameters to the end of `build_invoke_model_body` signature per `Style/KeywordParametersOrder` (provider.rb)
+
+## 0.3.16 - 2026-06-04
+
+### Fixed
+- **Thinking config silently ignored by Converse API for Claude Sonnet 4+** — Bedrock Converse API does not support extended thinking for Claude Sonnet 4 and newer. When thinking is enabled for an Anthropic model, the provider now routes through `invoke_model` with the native Anthropic Messages API payload (the same format Phase 1 direct tests use), which correctly generates and returns thinking blocks (provider.rb)
+- **Thinking extraction failed on AWS SDK structs** — `extract_thinking_from_content` assumed content blocks were Hashes. Bedrock Converse returns `Aws::BedrockRuntime::Types` structs that don't respond to `[]` the same way. Now uses `value()` helper for safe struct access on reasoning content blocks (provider.rb)
+- **Streaming reasoning/thinking blocks not detected** — `wire_block_start` only checked `:thinking` blocks but Bedrock Converse uses `:reasoning` blocks for thinking content. Added `:reasoning` check. `wire_block_delta` now extracts from `delta.reasoning.text` and `delta.thinking.text` in addition to `delta.text` (provider.rb)
+
+### Added
+- **Debug logging for Bedrock converse calls** — Logs thinking config sent, elapsed time, usage, additional_fields keys, and content block types on response. Logs stream completion with accumulated length, tool use block count, and stop reason (provider.rb)
+
+## 0.3.15 - 2026-06-04
+
+### Fixed
+- **Thinking config ignored in chat/stream/complete** — The `chat`, `stream`, and `complete` methods accepted `thinking:` kwarg but never passed it to Bedrock's converse API. Now passes thinking through `additional_model_request_fields[:thinking]` with AWS-format `{ type: "enabled", budget_tokens: N }`, accepting both `:budget_tokens` and `:budget` keys for compatibility with Anthropic API format (provider.rb)
+
+## 0.3.14 - 2026-06-04
+
+### Fixed
+- **`NameError` on unpopulated AWS SDK struct fields** — `Aws::Structure` objects declare all members in their schema (including `cache_creation_input_tokens`), so `key?` returns `true`, but accessing a missing member raises `NameError` instead of returning `nil`. Added `safe_struct_access` helper that wraps `object[key]` in `rescue NameError → nil`, so unpopulated struct fields gracefully return `nil` instead of crashing the request (provider.rb)
+
 ## 0.3.13 - 2026-06-02
 
 ### Fixed
