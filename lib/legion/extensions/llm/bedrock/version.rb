@@ -4,7 +4,7 @@ module Legion
   module Extensions
     module Llm
       module Bedrock
-        VERSION = '0.3.18'
+        VERSION = '0.3.19'
       end
     end
   end

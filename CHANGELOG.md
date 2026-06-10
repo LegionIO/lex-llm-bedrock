@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.19 - 2026-06-10
+
+### Fixed
+- **Tool role mapped incorrectly for Bedrock Converse** — Bedrock Converse API does not accept `role: 'tool'`; tool results must use `role: 'user'`. `format_invoke_model_messages` now remaps tool-role messages to user-role before serialization (provider.rb).
+- **Unused keyword parameters in build_invoke_model_body** — Replaced explicit unused `_model`/`_streaming` kwargs with `**_rest` splat to capture and discard any extra keywords cleanly (provider.rb).
+- **Spec helper LoadError** — Wrapped `require 'legion/extensions/helpers/lex'` in rescue block so specs load in isolated environments where the lex helper gem is absent. Added `register_provider_options` monkey-patch for standalone Configuration compatibility (spec_helper.rb).
+
 ## 0.3.18 - 2026-06-05
 
 ### Fixed
