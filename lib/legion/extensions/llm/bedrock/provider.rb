@@ -555,8 +555,7 @@ module Legion
             Legion::Extensions::Llm::Message.new(**msg_attrs)
           end
 
-          def build_invoke_model_body(messages:, temperature:, max_tokens:, tools:, tool_prefs:, thinking:,
-                                      _model: nil, _streaming: false)
+          def build_invoke_model_body(messages:, temperature:, max_tokens:, tools:, tool_prefs:, thinking:, **_rest)
             body = {
               max_tokens: max_tokens || 4096,
               messages: format_invoke_model_messages(messages),
@@ -597,7 +596,7 @@ module Legion
 
               next if content.nil? || (content.is_a?(Array) && content.empty?)
 
-              { role: role, content: content }
+              { role: role == 'tool' ? 'user' : role, content: content }
             end
           end
 
