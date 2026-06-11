@@ -8,6 +8,10 @@ AllCops:
   TargetRubyVersion: 3.4
   SuggestExtensions: false
 
+Lint/ShadowedException:
+  Enabled: false
+Lint/UselessConstantScoping:
+  Enabled: false
 Metrics/BlockLength:
   Exclude:
     - "*.gemspec"

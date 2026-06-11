@@ -20,3 +20,15 @@ unless Legion::Extensions::Llm::Configuration.respond_to?(:register_provider_opt
 end
 
 require 'legion/extensions/llm/bedrock'
+
+# Load conformance kit from lex-llm spec/ directory (shipped in gem, not on load path).
+# Consumer pattern per B1b report: Gem.loaded_specs + Dir glob.
+begin
+  lex_llm_path = Gem.loaded_specs['lex-llm']&.full_gem_path
+  if lex_llm_path
+    kit_path = File.join(lex_llm_path, 'spec', 'legion', 'extensions', 'llm', 'conformance')
+    Dir[File.join(kit_path, '**', '*.rb')].each { |f| require f } if Dir.exist?(kit_path)
+  end
+rescue StandardError => e
+  log.warn("Failed to load conformance kit: #{e.message}") if respond_to?(:log)
+end

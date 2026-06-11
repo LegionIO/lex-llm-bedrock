@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 - 2026-06-10
+
+### Added
+- **Canonical provider translator** — New `Legion::Extensions::Llm::Bedrock::Translator` class implementing the canonical translator interface per Phase 3 of the N×N routing design. Supports `render_request`, `parse_response`, `parse_chunk`, and `capabilities`. Extracted from existing `format_messages`, `format_tools`, `parse_*` provider code (provider.rb) — move and normalize, no semantic rewrites.
+- **Dual render targets** — Translator renders canonical requests to both Bedrock Converse API (`:converse`) and Bedrock invoke_model with Anthropic Messages payload (`:invoke_model`). Auto-selection: Anthropic models with thinking or tools route through invoke_model, all other requests use Converse.
+- **Conformance kit adoption** — Loads `it_behaves_like 'a canonical provider translator'` shared examples from lex-llm. Full fixture-driven conformance with simple text, system prompt, params, tools, thinking, multi-turn continuation, streaming (text/thinking/tool call), error, stop_reason mapping, and round-trip consistency.
+- **Canonical capabilities declaration** — `capabilities` declares `provider: 'bedrock'`, `render_targets: [:converse, :invoke_model]`, `thinking: :budget_tokens`, `stop_reasons` mapping (including `guardrail_intervened` → `content_filter`).
+
+### Changed
+- **lex-llm dependency** — Bumped to `lex-llm >= 0.5.0` for canonical types (Request/Response/Chunk/Params/Thinking/ToolCall/Usage/Message/ContentBlock/ToolDefinition) and conformance kit availability.
+- **Version bump** — Minor version 0.3.x → 0.4.0 (additive feature release).
+
+### Fixed
+- **Params handling** — Translator uses `Canonical::Params.from_hash` instead of non-existent `Params.build`. All 187 specs pass.
+- **Content block type/Access** — Translator correctly handles both Hash-inputs and `Canonical::ContentBlock` Data-struct objects with `.type`/`.text` attribute accessors.
+
 ## 0.3.19 - 2026-06-10
 
 ### Fixed

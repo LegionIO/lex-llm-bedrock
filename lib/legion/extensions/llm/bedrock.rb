@@ -2,6 +2,7 @@
 
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/bedrock/provider'
+require 'legion/extensions/llm/bedrock/translator'
 require 'legion/extensions/llm/bedrock/version'
 require 'legion/logging/helper'
 
