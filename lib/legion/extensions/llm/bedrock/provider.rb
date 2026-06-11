@@ -18,6 +18,10 @@ module Legion
           STATIC_MODELS = [
             { model: 'anthropic.claude-3-haiku-20240307-v1:0', alias: 'claude-3-haiku' },
             { model: 'anthropic.claude-sonnet-4-20250514-v1:0', alias: 'anthropic.claude-sonnet-4' },
+            { model: 'anthropic.claude-sonnet-4-20250514-v1:0', alias: 'claude-sonnet-4-6' },
+            { model: 'anthropic.claude-sonnet-4-20250514-v1:0', alias: 'claude-sonnet-4-5-20241022' },
+            { model: 'anthropic.claude-opus-4-20250515-v1:0', alias: 'claude-opus-4-8' },
+            { model: 'anthropic.claude-haiku-4-20250506-v1:0', alias: 'claude-haiku-4-5' },
             { model: 'amazon.titan-text-express-v1', alias: 'titan-text-express' },
             { model: 'amazon.titan-embed-text-v2:0', alias: 'titan-embed-text-v2', usage_type: :embedding },
             { model: 'meta.llama3-2-11b-instruct-v1:0', alias: 'llama-3.2-11b-instruct' },
@@ -499,8 +503,15 @@ module Legion
                   state[:raw_events] << { event: event_type, data: raw_event } if dump_path
                   handle_invoke_model_stream_json(raw_event, state, mid) { |chunk| yield chunk if block_given? }
                 end
+              rescue Legion::JSON::ParseError => e
+                handle_exception(e, level: :warn, handled: true,
+                                    operation: 'bedrock.provider.invoke_model_stream.chunk_decode')
               rescue StandardError => e
-                log.warn { "bedrock.provider.invoke_model_stream: chunk decode error=#{sanitize_log(e.message)}" }
+                # Never swallow non-parse errors here — a silent rescue in this
+                # event handler previously hid streaming bugs as dead-air streams.
+                handle_exception(e, level: :error, handled: false,
+                                    operation: 'bedrock.provider.invoke_model_stream.chunk_event')
+                raise
               end
 
               stream.on_error_event do |event|
@@ -555,12 +566,14 @@ module Legion
             Legion::Extensions::Llm::Message.new(**msg_attrs)
           end
 
-          def build_invoke_model_body(messages:, temperature:, max_tokens:, tools:, tool_prefs:, thinking:, **_rest)
+          def build_invoke_model_body(messages:, temperature:, max_tokens:, tools:, tool_prefs:, thinking:, **rest)
+            system_content = extract_invoke_model_system(messages, system: rest[:system])
             body = {
               max_tokens: max_tokens || 4096,
               messages: format_invoke_model_messages(messages),
               anthropic_version: 'bedrock-2023-05-31'
             }
+            body[:system] = system_content if system_content
             body[:temperature] = temperature if temperature
             if tools && !tools.empty?
               tool_format = format_invoke_model_tools(tools, tool_prefs)
@@ -568,9 +581,23 @@ module Legion
               body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
             end
             body[:thinking] = invoke_model_thinking(thinking) if thinking
-            # NOTE: Don't include body[:stream] = true in the JSON body for invoke_model_with_response_stream.
-            # The endpoint itself implies streaming; Bedrock rejects the extra field.
             body
+          end
+
+          def extract_invoke_model_system(messages, system: nil)
+            parts = []
+            parts << system.to_s unless system.to_s.empty?
+            messages.each do |msg|
+              role = msg.respond_to?(:role) ? msg.role.to_s : (msg[:role] || msg['role']).to_s
+              next unless role == 'system'
+
+              content = msg.respond_to?(:content) ? msg.content : (msg[:content] || msg['content'])
+              text = content.is_a?(Array) ? content.filter_map { |b| b[:text] || b['text'] }.join("\n") : content.to_s
+              parts << text unless text.empty?
+            end
+            return nil if parts.empty?
+
+            parts.map { |t| { type: 'text', text: t } }
           end
 
           # Strip provider-specific keys (e.g. effort from OpenAI) that Bedrock/Anthropic APIs don't accept.
@@ -802,7 +829,11 @@ module Legion
               state[:stop_reason] = delta['stop_reason']
             end
           rescue StandardError => e
-            log.warn { "bedrock.provider.invoke_model_stream_json: error=#{e.message}" }
+            # Re-raise — a swallowed error here turns a streaming bug into a
+            # silent dead-air stream (message_start then nothing).
+            handle_exception(e, level: :error, handled: false,
+                                operation: 'bedrock.provider.invoke_model_stream_json')
+            raise
           end
 
           def static_offerings(**filters)
@@ -1273,8 +1304,8 @@ module Legion
               # Bedrock streaming: text blocks use delta.text,
               # reasoning/thinking blocks use delta.reasoning.text or delta.thinking.text
               text = value(delta, :text) ||
-                     (value(delta, :reasoning) ? value(reasoning_delta, :text) : nil) ||
-                     (value(delta, :thinking) ? value(thinking_delta, :text) : nil)
+                     value(value(delta, :reasoning), :text) ||
+                     value(value(delta, :thinking), :text)
               if text
                 if state[:in_thinking]
                   state[:thinking] << text
