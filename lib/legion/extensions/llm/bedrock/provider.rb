@@ -608,7 +608,7 @@ module Legion
           end
 
           def format_invoke_model_messages(messages)
-            messages.filter_map do |msg|
+            formatted = messages.filter_map do |msg|
               role = msg.respond_to?(:role) ? msg.role.to_s : (msg[:role] || msg['role']).to_s
               next if role == 'system'
 
@@ -624,6 +624,19 @@ module Legion
               next if content.nil? || (content.is_a?(Array) && content.empty?)
 
               { role: role == 'tool' ? 'user' : role, content: content }
+            end
+            consolidate_adjacent_roles(formatted)
+          end
+
+          def consolidate_adjacent_roles(messages)
+            return messages if messages.size < 2
+
+            messages.each_with_object([]) do |msg, result|
+              if result.last && result.last[:role] == msg[:role]
+                result.last[:content] = Array(result.last[:content]) + Array(msg[:content])
+              else
+                result << msg
+              end
             end
           end
 
@@ -934,13 +947,14 @@ module Legion
 
           def format_messages(messages)
             total = messages.size
-            messages.filter_map.with_index do |message, idx|
+            formatted = messages.filter_map.with_index do |message, idx|
               blocks = build_content_blocks(message)
               next if blocks.empty?
 
               cache_blocks = should_cache_message?(idx, total) ? add_cache_control_to_blocks(blocks) : blocks
               { role: bedrock_role(message.role), content: cache_blocks }
             end
+            consolidate_adjacent_roles(formatted)
           end
 
           def tool_result_blocks(message)
@@ -998,7 +1012,9 @@ module Legion
             text = content_text(message.content)
             blocks << { text: text } if text && !text.strip.empty?
 
-            message.tool_calls.each_value do |call|
+            # Array is canonical (name-keyed hashes dropped parallel same-name calls)
+            calls = message.tool_calls.is_a?(Hash) ? message.tool_calls.values : Array(message.tool_calls)
+            calls.each do |call|
               blocks << {
                 tool_use: {
                   tool_use_id: call.id,
