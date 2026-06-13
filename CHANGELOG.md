@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-06-13
+
+- **Gemfile cleanup** — Remove local path overrides; dependencies resolve from gemspec via rubygems.
+- **RuboCop fixes** — Auto-corrected 6 offenses (style/layout).
+- 199 examples, 0 failures; 17 files, 0 rubocop offenses.
+
 ## 0.4.0 - 2026-06-10
 
 ### Added

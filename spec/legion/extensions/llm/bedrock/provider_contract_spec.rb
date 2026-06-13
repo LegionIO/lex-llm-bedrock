@@ -17,8 +17,10 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
         { role: 'assistant', content: [{ type: 'text', text: 'I will use tools' },
                                        { type: 'tool_use', id: 'tc1', name: 'ruby', input: {} },
                                        { type: 'tool_use', id: 'tc2', name: 'bash', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tc1', content: [{ type: 'text', text: 'result1' }] }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tc2', content: [{ type: 'text', text: 'result2' }] }] }
+        { role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tc1', content: [{ type: 'text', text: 'result1' }] }] },
+        { role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tc2', content: [{ type: 'text', text: 'result2' }] }] }
       ]
 
       result = provider.send(:consolidate_adjacent_roles, messages)
