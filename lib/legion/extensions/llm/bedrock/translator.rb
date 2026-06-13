@@ -205,7 +205,7 @@ module Legion
                 tool_spec: {
                   name: tool.name,
                   description: tool.description.to_s,
-                  input_schema: { json: tool.parameters || { type: 'object', properties: {} } }
+                  input_schema: { json: tool.parameters }
                 }
               }
             end
@@ -282,7 +282,7 @@ module Legion
               {
                 name: tool.name,
                 description: (tool.description || '').to_s,
-                input_schema: tool.parameters || { type: 'object', properties: {} }
+                input_schema: tool.parameters
               }
             end
 

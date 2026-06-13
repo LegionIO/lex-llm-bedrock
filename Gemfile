@@ -11,7 +11,7 @@ end
 
 # lex-llm (>= 0.5.0) comes from gemspec with canonical types + conformance kit.
 # Override with a path/branch reference for local development only:
-#   gem 'lex-llm', path: ENV.fetch('LEX_LLM_PATH', '../lex-llm')
+gem 'lex-llm', path: ENV.fetch('LEX_LLM_PATH', '../lex-llm')
 
 group :development do
   gem 'bundler', '>= 2.0'

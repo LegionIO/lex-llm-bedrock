@@ -704,11 +704,11 @@ module Legion
 
           def format_invoke_model_tools(tools, tool_prefs)
             tool_list = tools.values.map do |tool|
+              raw_schema = tool[:params_schema] || tool['params_schema'] || tool[:parameters] || tool['parameters']
               {
                 name: tool[:name] || tool['name'],
                 description: tool[:description] || tool['description'] || '',
-                input_schema: tool[:params_schema] || tool['params_schema'] ||
-                  { type: 'object', properties: {} }
+                input_schema: Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw_schema)
               }
             end
 
@@ -1109,9 +1109,12 @@ module Legion
           end
 
           def tool_schema(tool)
-            return tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
-
-            { type: 'object', properties: {} }
+            raw = if tool.respond_to?(:params_schema) && tool.params_schema
+                    tool.params_schema
+                  elsif tool.respond_to?(:parameters)
+                    tool.parameters
+                  end
+            Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw)
           end
 
           def tool_choice(tool_prefs)
