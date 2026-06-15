@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 - 2026-06-15
+
+- **CapabilityPolicy integration** — AWS model summaries used as `:model_metadata`; Converse tool use from `:provider_envelope`. Settings overrides at provider/instance/model level supported.
+
 ## 0.4.1 - 2026-06-13
 
 - **Gemfile cleanup** — Remove local path overrides; dependencies resolve from gemspec via rubygems.

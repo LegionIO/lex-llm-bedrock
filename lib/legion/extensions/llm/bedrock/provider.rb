@@ -866,12 +866,24 @@ module Legion
 
           def offering_from_summary(summary)
             model = value(summary, :model_id)
+            real = real_capabilities_from_summary(summary)
+            policy = Legion::Extensions::Llm::CapabilityPolicy.resolve(
+              real: real,
+              provider_catalog: {},
+              probe: {},
+              provider_envelope: provider_envelope_capabilities,
+              provider_config: provider_capability_config,
+              instance_config: instance_capability_config,
+              model_config: model_capability_config(model)
+            )
+
             build_offering(
               model: model,
               alias_name: alias_for(model),
               model_family: normalize_provider(value(summary, :provider_name)) || model_family_for(model),
               usage_type: usage_type_from_modalities(value(summary, :output_modalities)),
-              capabilities: capabilities_from_summary(summary),
+              capabilities: policy[:capabilities],
+              capability_sources: policy[:sources],
               metadata: normalize_response(summary)
             )
           end
@@ -894,7 +906,7 @@ module Legion
           end
 
           def build_offering(model:, model_family:, usage_type:, instance_id: :default, alias_name: nil,
-                             capabilities: nil, metadata: {})
+                             capabilities: nil, capability_sources: nil, metadata: {})
             limits = infer_limits(model)
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :bedrock,
@@ -904,6 +916,7 @@ module Legion
               model: model,
               usage_type: usage_type,
               capabilities: capabilities || default_capabilities(model),
+              capability_sources: capability_sources,
               limits: limits,
               metadata: metadata.merge(model_family: model_family, alias: alias_name).compact
             )
@@ -1521,6 +1534,59 @@ module Legion
             caps << :vision if input_mods.include?('image')
             caps << :tools if caps.include?(:completion)
             caps
+          end
+
+          def real_capabilities_from_summary(summary)
+            caps = {}
+            caps[:streaming] = true if value(summary, :response_streaming_supported)
+            input_mods = Array(value(summary, :input_modalities)).map { |m| m.to_s.upcase }
+            caps[:vision] = true if input_mods.include?('IMAGE')
+            output_mods = Array(value(summary, :output_modalities)).map { |m| m.to_s.upcase }
+            caps[:embeddings] = true if output_mods.include?('EMBEDDING')
+            caps
+          end
+
+          def provider_envelope_capabilities
+            # Bedrock Converse API supports tool use across all active chat model families
+            { tools: true }
+          end
+
+          def provider_capability_config
+            return {} unless defined?(Legion::Extensions::Llm::CredentialSources)
+
+            conf = Legion::Extensions::Llm::CredentialSources.setting(:extensions, :llm, :bedrock)
+            conf.is_a?(Hash) ? conf.to_h.except(:instances, 'instances') : {}
+          rescue StandardError => e
+            handle_exception(e, level: :debug, handled: true, operation: 'bedrock.provider_capability_config')
+            {}
+          end
+
+          def instance_capability_config
+            cfg = config
+            result = {}
+            %i[capabilities enable_thinking enable_tools enable_streaming enable_vision enable_embeddings
+               thinking_flag tools_flag streaming_flag vision_flag embedding_flag embeddings_flag
+               tool_flag images_flag image_flag].each do |key|
+              next unless cfg.respond_to?(key)
+
+              val = cfg.send(key)
+              result[key] = val unless val.nil?
+            rescue StandardError
+              next
+            end
+            result
+          end
+
+          def model_capability_config(model_id)
+            models_conf = nil
+            models_conf = config.models if config.respond_to?(:models)
+            models_conf ||= config[:models] if config.respond_to?(:[])
+            return {} unless models_conf.respond_to?(:to_h)
+
+            models_conf.to_h[model_id.to_s] || models_conf.to_h[model_id.to_sym] || {}
+          rescue StandardError => e
+            handle_exception(e, level: :debug, handled: true, operation: 'bedrock.model_capability_config')
+            {}
           end
 
           def model_family_for(model)
