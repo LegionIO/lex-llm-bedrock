@@ -67,4 +67,28 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
     expect(params).not_to include(%i[req text]), "#{method_name} still has positional text"
     expect(params).not_to include(%i[req prompt]), "#{method_name} still has positional prompt"
   end
+
+  describe 'StaticCredentialsBlockedError' do
+    it 'is a StandardError subclass (catchable by normal rescue)' do
+      expect(Legion::Extensions::Llm::Bedrock::StaticCredentialsBlockedError).to be < StandardError
+    end
+
+    it 'is a ConfigurationError subclass' do
+      expect(Legion::Extensions::Llm::Bedrock::StaticCredentialsBlockedError).to be < Legion::Extensions::Llm::ConfigurationError
+    end
+  end
+
+  describe '#translator' do
+    let(:provider) do
+      described_class.new({
+                            bedrock_region: 'us-east-2', request_timeout: 30, max_retries: 0,
+                            retry_interval: 0, retry_backoff_factor: 0, retry_interval_randomness: 0
+                          })
+    end
+
+    it 'exposes a public translator accessor with capabilities' do
+      expect(provider.translator).to respond_to(:capabilities)
+      expect(provider.translator.capabilities[:provider]).to eq('bedrock')
+    end
+  end
 end

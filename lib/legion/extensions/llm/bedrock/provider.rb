@@ -11,6 +11,8 @@ module Legion
   module Extensions
     module Llm
       module Bedrock
+        class StaticCredentialsBlockedError < Legion::Extensions::Llm::ConfigurationError; end
+
         # Amazon Bedrock provider implementation for the Legion::Extensions::Llm contract.
         class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
           include Legion::Logging::Helper
@@ -119,6 +121,10 @@ module Legion
 
               model.respond_to?(:id) ? model.id.to_s : model.to_s
             end
+          end
+
+          def translator
+            @translator ||= Translator.new(region: region)
           end
 
           def api_base
@@ -1449,7 +1455,7 @@ module Legion
             return nil unless config.bedrock_access_key_id
 
             if static_credentials_blocked?
-              raise SecurityError,
+              raise StaticCredentialsBlockedError,
                     'Static AWS credentials are disabled (security.block_static_aws_credentials=true); use IAM roles'
             end
             log.warn('[bedrock] Using static AWS credentials — prefer IAM roles for production')
