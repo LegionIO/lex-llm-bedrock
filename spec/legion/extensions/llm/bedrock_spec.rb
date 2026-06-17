@@ -282,6 +282,63 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end.to raise_error(NotImplementedError, /not standardized/)
   end
 
+  describe 'model policy enforcement (compliance guard)' do
+    let(:provider) do
+      described_class::Provider.new(bedrock_region: 'us-west-2', bedrock_stub_responses: true,
+                                    model_whitelist: %w[haiku])
+    end
+
+    it 'fails closed in #chat for a model excluded by the whitelist, with no Bedrock call' do
+      allow(runtime_client).to receive(:converse)
+
+      expect { provider.chat(messages: [{ role: 'user', content: 'hi' }], model: 'anthropic.claude-sonnet-4-6') }
+        .to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
+      expect(runtime_client).not_to have_received(:converse)
+    end
+
+    it 'fails closed in #stream for an excluded model, with no Bedrock call' do
+      allow(runtime_client).to receive(:converse_stream)
+
+      expect do
+        provider.stream(messages: [{ role: 'user', content: 'hi' }], model: 'anthropic.claude-sonnet-4-6') do |chunk|
+          chunk
+        end
+      end.to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
+      expect(runtime_client).not_to have_received(:converse_stream)
+    end
+
+    it 'fails closed in #embed for an excluded model, with no Bedrock call' do
+      allow(runtime_client).to receive(:invoke_model)
+
+      expect { provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0') }
+        .to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
+      expect(runtime_client).not_to have_received(:invoke_model)
+    end
+  end
+
+  describe '.resolve_default_model (policy-aware default)' do
+    before { allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting).with(:extensions, :llm, :bedrock).and_return(nil) }
+
+    it 'keeps a configured default when no policy is set' do
+      expect(described_class.resolve_default_model(default_model: 'amazon.nova-pro-v1:0')).to eq('amazon.nova-pro-v1:0')
+    end
+
+    it 'falls back to DEFAULT_MODEL when none configured and no policy' do
+      expect(described_class.resolve_default_model({})).to eq(described_class::DEFAULT_MODEL)
+    end
+
+    it 'drops a configured default the whitelist forbids rather than forcing it' do
+      expect(described_class.resolve_default_model(default_model: 'anthropic.claude-sonnet-4',
+                                                   model_whitelist: %w[haiku])).to be_nil
+    end
+
+    it 'reads the provider-level whitelist when the instance config has none' do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting).with(:extensions, :llm, :bedrock)
+                                                                            .and_return({ model_whitelist: %w[haiku] })
+      expect(described_class.resolve_default_model(default_model: 'anthropic.claude-sonnet-4')).to be_nil
+    end
+  end
+
   # Prompt caching tests (issue #8)
   # Note: Bedrock Converse API does not support cache_control on text/image/document blocks.
   # The cache_control markers were removed to fix SDK union validation errors.

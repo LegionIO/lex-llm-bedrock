@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4 - 2026-06-17
+
+### Fixed
+- **Model policy enforced at dispatch (compliance)** — Bedrock overrides the base dispatch methods (`chat`, `stream`, `embed`), so the base `enforce_model_allowed!` guard did not apply. Each override now calls `enforce_model_allowed!(model_id(model))`, raising `ModelNotAllowedError` before any Bedrock API call when the model is excluded by `model_whitelist`/`model_blacklist`. Fail-closed, no exceptions.
+
+### Changed
+- **Policy-aware default model** — the `anthropic.claude-sonnet-4` default is no longer a hardcoded literal forced via `||=`; it is a named `DEFAULT_MODEL` constant resolved through `Provider.policy_safe_default_model`, so a configured whitelist/blacklist is never overridden by the fallback. Requires lex-llm >= 0.5.4.
+
 ## 0.4.3 - 2026-06-16
 
 - Dependency updates and code quality improvements.
