@@ -225,6 +225,7 @@ module Legion
             thinking: nil,
             **_provider_options
           )
+            enforce_model_allowed!(model_id(model))
             log.info { "bedrock.provider.chat: model=#{model_id(model)} messages=#{messages.size}" }
 
             # Bedrock Converse API silently drops thinking config and tool_use blocks
@@ -311,6 +312,7 @@ module Legion
 
           def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
                      thinking: nil, **_provider_options, &)
+            enforce_model_allowed!(model_id(model))
             log.info do
               "bedrock.provider.stream: model=#{model_id(model)} messages=#{messages.size} tools=#{tools.size}"
             end
@@ -368,6 +370,7 @@ module Legion
             **_provider_options
           )
             mid = model_id(model)
+            enforce_model_allowed!(mid)
             unless titan_embed?(mid)
               raise NotImplementedError,
                     "Bedrock embedding payload for #{mid} is not standardized"

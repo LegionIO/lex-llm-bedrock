@@ -19,12 +19,16 @@ module Legion
         PROVIDER_FAMILY = :bedrock
 
         DEFAULT_REGION = 'us-east-2'
+        # Provider's preferred default when the operator configures none. Used only
+        # as a fallback and only when the configured model policy permits it
+        # (see resolve_default_model) — a whitelist/blacklist is never overridden.
+        DEFAULT_MODEL = 'anthropic.claude-sonnet-4'
 
         def self.default_settings
           ::Legion::Extensions::Llm.provider_settings(
             family: PROVIDER_FAMILY,
             instance: {
-              default_model: 'anthropic.claude-sonnet-4',
+              default_model: DEFAULT_MODEL,
               region: 'us-east-1',
               tier: :cloud,
               transport: :aws_sdk,
@@ -73,9 +77,18 @@ module Legion
                            .transform_values do |config|
             sanitized = sanitize_instance_config(config)
             sanitized[:capabilities] ||= DEFAULT_CAPABILITIES.dup
-            sanitized[:default_model] ||= 'anthropic.claude-sonnet-4'
+            sanitized[:default_model] = resolve_default_model(sanitized)
             sanitized
           end
+        end
+
+        # Resolve a default_model that never violates the configured model policy
+        # (whitelist/blacklist stays authoritative over the DEFAULT_MODEL fallback).
+        def self.resolve_default_model(config)
+          provider_class.policy_safe_default_model(
+            configured: config[:default_model], fallback: DEFAULT_MODEL,
+            **provider_class.model_policy(config, PROVIDER_FAMILY)
+          )
         end
 
         def self.unresolved_credential?(config)
