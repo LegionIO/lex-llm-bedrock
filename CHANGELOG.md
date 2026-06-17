@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.3 - 2026-06-16
+
+- Dependency updates and code quality improvements.
+
+## 0.4.2 - 2026-06-15
+
+- **CapabilityPolicy integration** — AWS model summaries used as `:model_metadata`; Converse tool use from `:provider_envelope`. Settings overrides at provider/instance/model level supported.
+
+## 0.4.1 - 2026-06-13
+
+- **Gemfile cleanup** — Remove local path overrides; dependencies resolve from gemspec via rubygems.
+- **RuboCop fixes** — Auto-corrected 6 offenses (style/layout).
+- 199 examples, 0 failures; 17 files, 0 rubocop offenses.
+
 ## 0.4.0 - 2026-06-10
 
 ### Added

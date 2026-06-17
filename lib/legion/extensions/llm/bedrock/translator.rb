@@ -205,7 +205,7 @@ module Legion
                 tool_spec: {
                   name: tool.name,
                   description: tool.description.to_s,
-                  input_schema: { json: tool.parameters || { type: 'object', properties: {} } }
+                  input_schema: { json: tool.parameters }
                 }
               }
             end
@@ -234,6 +234,9 @@ module Legion
               anthropic_version: 'bedrock-2023-05-31'
             }
 
+            sys = render_invoke_system(canonical)
+            body[:system] = sys if sys
+
             temp = canonical.params&.temperature
             body[:temperature] = temp if temp
 
@@ -256,6 +259,22 @@ module Legion
             { type: 'enabled', budget_tokens: budget }
           end
 
+          def render_invoke_system(canonical)
+            sys = canonical.system
+            return nil if sys.nil? || sys.to_s.strip.empty?
+
+            if sys.is_a?(Array)
+              sys.map do |block|
+                wire = { type: 'text', text: (block[:text] || block['text'] || block.to_s).to_s }
+                cc = block[:cache_control] || block['cache_control']
+                wire[:cache_control] = cc if cc
+                wire
+              end
+            else
+              [{ type: 'text', text: sys.to_s }]
+            end
+          end
+
           def build_invoke_tools(canonical)
             return nil unless canonical.tools && !canonical.tools.empty?
 
@@ -263,7 +282,7 @@ module Legion
               {
                 name: tool.name,
                 description: (tool.description || '').to_s,
-                input_schema: tool.parameters || { type: 'object', properties: {} }
+                input_schema: tool.parameters
               }
             end
 
