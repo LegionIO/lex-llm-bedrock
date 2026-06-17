@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 - 2026-06-16
+
+- Dependency updates and code quality improvements.
+
 ## 0.4.2 - 2026-06-15
 
 - **CapabilityPolicy integration** — AWS model summaries used as `:model_metadata`; Converse tool use from `:provider_envelope`. Settings overrides at provider/instance/model level supported.
