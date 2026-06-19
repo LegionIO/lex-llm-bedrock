@@ -1560,7 +1560,7 @@ module Legion
             conf = Legion::Extensions::Llm::CredentialSources.setting(:extensions, :llm, :bedrock)
             conf.is_a?(Hash) ? conf.to_h.except(:instances, 'instances') : {}
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'bedrock.provider_capability_config')
+            handle_exception(e, level: :warn, handled: true, operation: 'bedrock.provider_capability_config')
             {}
           end
 
@@ -1588,7 +1588,7 @@ module Legion
 
             models_conf.to_h[model_id.to_s] || models_conf.to_h[model_id.to_sym] || {}
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'bedrock.model_capability_config')
+            handle_exception(e, level: :warn, handled: true, operation: 'bedrock.model_capability_config')
             {}
           end
 
