@@ -20,8 +20,9 @@ module Legion
 
           DEFAULT_MAX_TOKENS = 4096
 
-          def initialize(region: nil)
+          def initialize(region: nil, geo_prefix: nil)
             @region = region
+            @geo_prefix = geo_prefix
           end
 
           def capabilities
@@ -150,17 +151,13 @@ module Legion
           end
 
           def inference_profile_id(model_id)
-            return model_id if model_id.nil? || model_id.start_with?('us.', 'eu.', 'ap.', 'arn:')
+            return model_id if model_id.nil? || model_id.start_with?('arn:')
 
-            return model_id unless MODEL_PREFIXED_FAMILIES.any? { |p| model_id.start_with?(p) }
+            canonical = model_id.sub(/\A(?:us|eu|ap)\./, '')
+            return canonical unless MODEL_PREFIXED_FAMILIES.any? { |p| canonical.start_with?(p) }
 
-            region = @region || 'us-east-1'
-            prefix = if region.include?('eu')
-                       'eu'
-                     else
-                       region.include?('ap') ? 'ap' : 'us'
-                     end
-            "#{prefix}.#{model_id}"
+            prefix = normalize_geo_prefix(@geo_prefix)
+            "#{prefix}.#{canonical}"
           end
 
           def build_inference_config(canonical)
@@ -185,6 +182,11 @@ module Legion
             budget = canonical_thinking_budget(canonical)
             budget ||= DEFAULT_MAX_TOKENS / 4
             { thinking: { type: 'enabled', budget_tokens: budget } }
+          end
+
+          def normalize_geo_prefix(value)
+            candidate = value.to_s.downcase
+            %w[us eu ap].include?(candidate) ? candidate : 'us'
           end
 
           def canonical_thinking_budget(canonical)
@@ -254,9 +256,14 @@ module Legion
           def build_invoke_thinking(canonical)
             return nil unless canonical.thinking
 
-            budget = canonical_thinking_budget(canonical)
-            budget ||= DEFAULT_MAX_TOKENS / 4
-            { type: 'enabled', budget_tokens: budget }
+            model = model_from_request(canonical)
+            if model.to_s.include?('claude-sonnet-4')
+              budget = canonical_thinking_budget(canonical)
+              budget ||= DEFAULT_MAX_TOKENS / 4
+              return { type: 'enabled', budget_tokens: budget }
+            end
+
+            { type: 'adaptive' }
           end
 
           def render_invoke_system(canonical)

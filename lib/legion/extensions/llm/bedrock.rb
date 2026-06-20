@@ -30,6 +30,7 @@ module Legion
             instance: {
               default_model: DEFAULT_MODEL,
               region: 'us-east-1',
+              geo_prefix: 'us',
               tier: :cloud,
               transport: :aws_sdk,
               credentials: {
@@ -41,6 +42,7 @@ module Legion
               },
               provider: {
                 region: DEFAULT_REGION,
+                geo_prefix: 'us',
                 endpoint: nil,
                 stub_responses: false
               },
@@ -222,6 +224,7 @@ module Legion
 
           normalized = config.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
           normalized[:bedrock_region] ||= normalized.delete(:region)
+          normalized[:bedrock_geo_prefix] ||= normalized.delete(:geo_prefix)
           normalized[:bedrock_endpoint] ||= normalized.delete(:endpoint)
           normalized[:bedrock_endpoint] ||= normalized.delete(:base_url)
           normalized[:bedrock_endpoint] ||= normalized.delete(:api_base)

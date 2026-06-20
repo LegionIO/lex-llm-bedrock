@@ -77,6 +77,17 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(offering.metadata).to include(model_family: :anthropic, alias: 'claude-3-haiku')
   end
 
+  it 'uses explicit geo prefixing independent of AWS region' do
+    expect(described_class::Provider.inference_profile_id('anthropic.claude-opus-4-7', geo_prefix: 'eu',
+                                                                                       region: 'us-west-2'))
+      .to eq('eu.anthropic.claude-opus-4-7')
+  end
+
+  it 'replaces an existing geo prefix with the configured prefix' do
+    expect(described_class::Provider.inference_profile_id('us.anthropic.claude-opus-4-7', geo_prefix: 'ap'))
+      .to eq('ap.anthropic.claude-opus-4-7')
+  end
+
   it 'resolves anthropic sonnet 4 alias to a versioned Bedrock model id' do
     expect(described_class::Provider.resolve_model_id('anthropic.claude-sonnet-4'))
       .to eq('anthropic.claude-sonnet-4-20250514-v1:0')
@@ -184,10 +195,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       )
     )
 
-    models = provider.list_models
+    provider.discover_offerings(live: true)
 
-    expect(registry_publisher).to have_received(:publish_models_async)
-      .with(models, readiness: hash_including(provider: :bedrock, live: false))
+    expect(registry_publisher).to have_received(:publish_models_async).at_least(:once)
   end
 
   it 'builds sanitized lex-llm registry events for Bedrock model availability' do

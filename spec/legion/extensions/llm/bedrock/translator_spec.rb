@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'legion/extensions/llm/bedrock/translator'
 
 RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
-  subject(:translator) { described_class.new(region: 'us-east-1') }
+  subject(:translator) { described_class.new(region: 'us-east-1', geo_prefix: 'us') }
 
   let(:canonical) { Legion::Extensions::Llm::Canonical }
   let(:conformance) { Canonical::Conformance }
@@ -85,6 +85,32 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
       expect(wire[:messages]).to be_a(Array)
       expect(wire[:messages].first[:role]).to eq('user')
       expect(wire[:inference_config][:max_tokens]).to eq(2048)
+    end
+
+    it 'uses the explicit geo prefix instead of deriving from AWS region' do
+      eu_translator = described_class.new(region: 'us-east-1', geo_prefix: 'eu')
+      req = canonical::Request.build(
+        messages: [
+          canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hello')])
+        ],
+        metadata: { model: 'anthropic.claude-opus-4-7' }
+      )
+
+      wire = eu_translator.render_request(req, target: :converse)
+      expect(wire[:model_id]).to eq('eu.anthropic.claude-opus-4-7')
+    end
+
+    it 'replaces an existing geo prefix with the configured prefix' do
+      ap_translator = described_class.new(region: 'eu-west-1', geo_prefix: 'ap')
+      req = canonical::Request.build(
+        messages: [
+          canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hello')])
+        ],
+        metadata: { model: 'us.anthropic.claude-opus-4-7' }
+      )
+
+      wire = ap_translator.render_request(req, target: :converse)
+      expect(wire[:model_id]).to eq('ap.anthropic.claude-opus-4-7')
     end
 
     it 'renders system prompt as system blocks' do
@@ -215,13 +241,25 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
     it 'renders thinking config for invoke_model' do
       req = canonical::Request.build(
         messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
-        thinking: { budget: 2048 },
+        thinking: { budget: 2048, effort: 'high' },
         metadata: { model: 'anthropic.claude-sonnet-4' }
       )
 
       wire = translator.render_request(req, target: :invoke_model)
       expect(wire[:thinking][:type]).to eq('enabled')
       expect(wire[:thinking][:budget_tokens]).to eq(2048)
+      expect(wire).not_to have_key(:output_config)
+    end
+
+    it 'renders adaptive thinking config for non-sonnet anthropic invoke_model requests' do
+      req = canonical::Request.build(
+        messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
+        thinking: { budget: 2048, effort: 'high' },
+        metadata: { model: 'anthropic.claude-opus-4-7' }
+      )
+
+      wire = translator.render_request(req, target: :invoke_model)
+      expect(wire[:thinking][:type]).to eq('adaptive')
     end
 
     it 'renders tool_choice as required in invoke_model' do

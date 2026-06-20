@@ -66,6 +66,7 @@ module Legion
                 bedrock_access_key_id
                 bedrock_secret_access_key
                 bedrock_session_token
+                bedrock_geo_prefix
                 bedrock_profile
                 bedrock_stub_responses
                 bearer_token
@@ -85,24 +86,19 @@ module Legion
 
             INFERENCE_PROFILE_PREFIXES = %w[anthropic. meta. mistral. cohere. ai21.].freeze
 
-            def inference_profile_id(model, region: nil)
-              return model if model.start_with?('us.', 'eu.', 'ap.', 'arn:')
-              return model unless INFERENCE_PROFILE_PREFIXES.any? { |p| model.start_with?(p) }
+            def inference_profile_id(model, geo_prefix: 'us', region: nil)
+              return model if model.start_with?('arn:')
 
-              prefix = region ? region_prefix(region) : 'us'
-              "#{prefix}.#{model}"
+              canonical = model.sub(/\A(?:us|eu|ap)\./, '')
+              return canonical unless INFERENCE_PROFILE_PREFIXES.any? { |p| canonical.start_with?(p) }
+
+              prefix = normalize_geo_prefix(geo_prefix || region)
+              "#{prefix}.#{canonical}"
             end
 
-            # Region-based inference profile prefix mapping.
-            # Bare model IDs (e.g. anthropic.claude-sonnet-4) get the region prefix.
-            REGION_PREFIX = {
-              'us-east-1' => 'us', 'us-east-2' => 'us', 'us-west-1' => 'us', 'us-west-2' => 'us',
-              'eu-central-1' => 'eu', 'eu-west-1' => 'eu', 'eu-west-2' => 'eu', 'eu-west-3' => 'eu',
-              'ap-south-1' => 'ap', 'ap-southeast-1' => 'ap', 'ap-southeast-2' => 'ap', 'ap-northeast-1' => 'ap'
-            }.freeze
-
-            def region_prefix(region)
-              REGION_PREFIX.fetch(region.to_s, 'us')
+            def normalize_geo_prefix(value)
+              candidate = value.to_s.downcase
+              %w[us eu ap].include?(candidate) ? candidate : 'us'
             end
           end
 
@@ -143,6 +139,11 @@ module Legion
 
           def region
             config.bedrock_region || settings[:region] || 'us-east-1'
+          end
+
+          def geo_prefix
+            configured = config.bedrock_geo_prefix if config.respond_to?(:bedrock_geo_prefix)
+            self.class.normalize_geo_prefix(configured || settings[:geo_prefix])
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -196,14 +197,16 @@ module Legion
             response = bedrock_client.list_foundation_models(**request_filters)
             models = Array(value(response, :model_summaries)).filter_map { |summary| model_info_from_summary(summary) }
             log.info { "bedrock.provider.list_models: found #{models.size} models" }
-            self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
             models
           end
 
           def discover_offerings(live: false, **filters)
             return static_offerings(**filters) unless live
 
-            super
+            provider_health = health(live:)
+            @cached_offerings = discover_live_offerings(filters, provider_health, live:)
+            log_discover_complete(@cached_offerings)
+            @cached_offerings
           end
 
           def chat(
@@ -302,6 +305,42 @@ module Legion
             parse_converse_response(response, model_id(model))
           end
 
+          def discovery_registry_readiness(provider_health, live:)
+            {
+              provider: slug.to_sym,
+              configured: configured?,
+              ready: provider_health[:ready] == true,
+              live: live,
+              health: provider_health
+            }
+          end
+
+          def discover_live_offerings(filters, provider_health, live:)
+            readiness = discovery_registry_readiness(provider_health, live:)
+            Array(list_models(live:, **filters)).filter_map do |model|
+              self.class.registry_publisher.publish_models_async([model], readiness:)
+              next unless model_matches_filters?(model, filters)
+              next unless model_allowed?(model.id)
+
+              log_model_discovered(model)
+              offering_from_model(model, health: provider_health)
+            end
+          end
+
+          def log_model_discovered(model)
+            log.unknown(
+              "[#{slug}] instance=#{provider_instance_id} action=model_discovered " \
+              "model=#{model.id} family=#{model.family}"
+            )
+          end
+
+          def log_discover_complete(offerings)
+            log.info(
+              "[#{slug}] instance=#{provider_instance_id} action=discover_complete " \
+              "model_count=#{Array(offerings).size}"
+            )
+          end
+
           def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
                      thinking: nil, **_provider_options, &)
             enforce_model_allowed!(model_id(model))
@@ -345,7 +384,7 @@ module Legion
             log.debug { "bedrock.provider.count_tokens: model=#{model_id(model)}" }
             request = Utils.deep_merge(
               {
-                model_id: self.class.inference_profile_id(model_id(model), region: region),
+                model_id: self.class.inference_profile_id(model_id(model), geo_prefix: geo_prefix),
                 input: { converse: { messages: format_messages(messages), system: system_blocks(system) }.compact }
               },
               params
@@ -417,7 +456,7 @@ module Legion
             log.debug { "bedrock.provider.invoke_model_chat: model=#{mid} thinking=#{thinking.inspect}" }
 
             response = runtime_client.invoke_model(
-              model_id: self.class.inference_profile_id(mid, region: region),
+              model_id: self.class.inference_profile_id(mid, geo_prefix: geo_prefix),
               content_type: 'application/json',
               accept: 'application/json',
               body: Legion::JSON.generate(body)
@@ -471,7 +510,7 @@ module Legion
 
             # rubocop:disable Metrics/BlockLength
             runtime_client.invoke_model_with_response_stream(
-              model_id: self.class.inference_profile_id(mid, region: region),
+              model_id: self.class.inference_profile_id(mid, geo_prefix: geo_prefix),
               content_type: 'application/json',
               accept: 'application/json',
               body: Legion::JSON.generate(body)
@@ -581,7 +620,10 @@ module Legion
               body[:tools] = tool_format[:tools]
               body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
             end
-            body[:thinking] = invoke_model_thinking(thinking) if thinking
+            if thinking
+              body[:thinking] =
+                invoke_model_thinking(model: rest[:model] || model_id(rest[:model]), thinking: thinking)
+            end
             body
           end
 
@@ -601,11 +643,17 @@ module Legion
             parts.map { |t| { type: 'text', text: t } }
           end
 
-          # Strip provider-specific keys (e.g. effort from OpenAI) that Bedrock/Anthropic APIs don't accept.
-          def invoke_model_thinking(thinking)
-            return thinking unless thinking.is_a?(Hash)
+          def invoke_model_thinking(model:, thinking:)
+            mid = model_id(model)
+            if mid.include?('claude-sonnet-4')
+              budget = if thinking.is_a?(Hash)
+                         thinking[:budget_tokens] || thinking['budget_tokens'] ||
+                           thinking[:budget] || thinking['budget']
+                       end
+              return { type: 'enabled', budget_tokens: budget }.compact
+            end
 
-            thinking.except(:effort, 'effort')
+            { type: 'adaptive' }
           end
 
           def format_invoke_model_messages(messages)
@@ -947,7 +995,7 @@ module Legion
           def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:, guardrail_config: nil,
                                thinking: nil)
             {
-              model_id: self.class.inference_profile_id(model_id(model), region: region),
+              model_id: self.class.inference_profile_id(model_id(model), geo_prefix: geo_prefix),
               messages: format_messages(messages.reject { |message| message.role == :system }),
               system: format_system(messages),
               inference_config: { temperature: temperature, max_tokens: max_tokens || model_max_tokens(model) }.compact,
