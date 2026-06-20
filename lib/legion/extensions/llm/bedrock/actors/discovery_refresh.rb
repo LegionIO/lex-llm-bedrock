@@ -21,7 +21,7 @@ module Legion
     module Llm
       module Bedrock
         module Actor
-          class DiscoveryRefresh < Legion::Extensions::Actors::Every # rubocop:disable Style/Documentation,Metrics/ClassLength
+          class DiscoveryRefresh < Legion::Extensions::Actors::Every # rubocop:disable Style/Documentation
             include Legion::Logging::Helper
 
             if defined?(Legion::Extensions::Llm::Inventory::ScopedRefresher)
@@ -75,18 +75,6 @@ module Legion
             def manual(**)
               tick if defined?(Legion::Extensions::Llm::Inventory::ScopedRefresher) &&
                       self.class.ancestors.include?(Legion::Extensions::Llm::Inventory::ScopedRefresher)
-
-              log.debug('[bedrock][discovery_refresh] refreshing model list')
-              return unless defined?(Legion::LLM::Discovery)
-
-              Legion::LLM::Discovery.refresh_discovered_models!(provider: :bedrock)
-
-              if defined?(Legion::LLM::Router) && Legion::LLM::Router.respond_to?(:populate_auto_rules)
-                Legion::LLM::Router.populate_auto_rules(Legion::LLM::Discovery.discovered_instances)
-              end
-              if defined?(Legion::LLM::Inventory) && Legion::LLM::Inventory.respond_to?(:invalidate_offerings_cache!)
-                Legion::LLM::Inventory.invalidate_offerings_cache!
-              end
             rescue StandardError => e
               handle_exception(e, level: :warn, handled: true, operation: 'bedrock.actor.discovery_refresh')
             end
