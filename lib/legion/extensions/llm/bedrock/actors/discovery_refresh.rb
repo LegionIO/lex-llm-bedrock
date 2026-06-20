@@ -21,7 +21,7 @@ module Legion
     module Llm
       module Bedrock
         module Actor
-          class DiscoveryRefresh < Legion::Extensions::Actors::Every # rubocop:disable Style/Documentation
+          class DiscoveryRefresh < Legion::Extensions::Actors::Every # rubocop:disable Style/Documentation,Metrics/ClassLength
             include Legion::Logging::Helper
 
             if defined?(Legion::Extensions::Llm::Inventory::ScopedRefresher)
@@ -85,9 +85,22 @@ module Legion
               adapter = instance[:adapter]
               return [] unless adapter.respond_to?(:discover_offerings)
 
-              Array(adapter.discover_offerings(live: false)).flat_map do |offering|
+              Array(adapter.discover_offerings(live: false)).flat_map do |raw_offering|
+                offering = offering_to_hash(raw_offering)
+                next [] unless offering
+
                 build_offering_lanes(offering, instance, fleet_enabled: fleet_enabled)
               end
+            end
+
+            def offering_to_hash(offering)
+              return nil if offering.nil?
+              return offering if offering.is_a?(Hash)
+
+              hash = offering.to_h
+              hash[:type] ||= hash[:usage_type]
+              hash[:enabled] = offering.respond_to?(:enabled?) ? offering.enabled? : true
+              hash
             end
 
             def build_offering_lanes(offering, instance, fleet_enabled: false)
@@ -97,7 +110,7 @@ module Legion
               lane_fields = {
                 tier: raw_tier,
                 provider_family: :bedrock,
-                instance_id: instance[:id] || instance[:instance_id] || 'default',
+                instance_id: instance[:instance] || instance[:instance_id] || instance[:id] || 'default',
                 type: type,
                 model: offering[:model]
               }
