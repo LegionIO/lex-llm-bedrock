@@ -85,9 +85,17 @@ module Legion
         # Resolve a default_model that never violates the configured model policy
         # (whitelist/blacklist stays authoritative over the DEFAULT_MODEL fallback).
         def self.resolve_default_model(config)
+          cfg = config.is_a?(Hash) ? config : {}
+          provider_conf = CredentialSources.setting(:extensions, :llm, PROVIDER_FAMILY)
+          provider_conf = {} unless provider_conf.is_a?(Hash)
+          global_conf = (::Legion::Settings.dig(:extensions, :llm) if defined?(::Legion::Settings))
+          global_conf = {} unless global_conf.is_a?(Hash)
+
           provider_class.policy_safe_default_model(
-            configured: config[:default_model], fallback: DEFAULT_MODEL,
-            **provider_class.model_policy(config, PROVIDER_FAMILY)
+            configured: cfg[:default_model],
+            fallback: DEFAULT_MODEL,
+            whitelist: provider_class.resolve_policy_value(cfg, provider_conf, global_conf, :model_whitelist),
+            blacklist: provider_class.resolve_policy_value(cfg, provider_conf, global_conf, :model_blacklist)
           )
         end
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.6] - 2026-06-20
+
+### Fixed
+- Canonicalize Bedrock embedding discovery to the shared singular `:embedding` capability and route provider/instance/model override extraction through the `lex-llm` base provider contract.
+
 ## [0.4.5] - 2026-06-19
 
 ### Changed

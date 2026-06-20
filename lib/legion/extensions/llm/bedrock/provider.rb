@@ -127,6 +127,10 @@ module Legion
             @translator ||= Translator.new(region: region)
           end
 
+          def settings
+            Bedrock.default_settings
+          end
+
           def api_base
             config.bedrock_endpoint || "https://bedrock-runtime.#{region}.amazonaws.com"
           end
@@ -139,27 +143,6 @@ module Legion
 
           def region
             config.bedrock_region || settings[:region] || 'us-east-1'
-          end
-
-          def discover_offerings(live: false, **filters)
-            unless live
-              return @cached_offerings if @cached_offerings&.any?
-
-              log.debug { 'bedrock.provider.discover_offerings: returning static catalog' }
-              return static_offerings(**filters)
-            end
-
-            log.info { "bedrock.provider.discover_offerings: listing foundation models (region=#{region})" }
-            response = bedrock_client.list_foundation_models(**filters)
-            @cached_offerings = Array(value(response, :model_summaries)).filter_map do |summary|
-              offering = offering_from_summary(summary)
-              model_id = offering.respond_to?(:model) ? offering.model : (offering[:model] || offering[:id])
-              next unless model_allowed?(model_id.to_s)
-
-              offering
-            end
-            log.info { "bedrock.provider.discover_offerings: found #{@cached_offerings.size} models" }
-            @cached_offerings
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -205,13 +188,22 @@ module Legion
             end
           end
 
-          def list_models(**)
+          def list_models(**filters)
+            request_filters = {}
+            request_filters[:by_provider] = filters[:by_provider] if filters[:by_provider]
+
             log.info { 'bedrock.provider.list_models: fetching live model list' }
-            response = bedrock_client.list_foundation_models
+            response = bedrock_client.list_foundation_models(**request_filters)
             models = Array(value(response, :model_summaries)).filter_map { |summary| model_info_from_summary(summary) }
             log.info { "bedrock.provider.list_models: found #{models.size} models" }
             self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
             models
+          end
+
+          def discover_offerings(live: false, **filters)
+            return static_offerings(**filters) unless live
+
+            super
           end
 
           def chat(
@@ -867,9 +859,16 @@ module Legion
             end
           end
 
-          def offering_from_summary(summary)
-            model = value(summary, :model_id)
-            real = real_capabilities_from_summary(summary)
+          def offering_from_model(model_info, health: {})
+            model = model_info.respond_to?(:id) ? model_info.id : model_info
+            real = if model_info.respond_to?(:capabilities)
+                     Array(model_info.capabilities).to_h do |capability|
+                       [capability.to_s.downcase.tr('-', '_').to_sym, true]
+                     end
+                   else
+                     {}
+                   end
+            metadata = model_info.respond_to?(:metadata) && model_info.metadata.is_a?(Hash) ? model_info.metadata : {}
             policy = Legion::Extensions::Llm::CapabilityPolicy.resolve(
               real: real,
               provider_catalog: {},
@@ -883,11 +882,12 @@ module Legion
             build_offering(
               model: model,
               alias_name: alias_for(model),
-              model_family: normalize_provider(value(summary, :provider_name)) || model_family_for(model),
-              usage_type: usage_type_from_modalities(value(summary, :output_modalities)),
+              model_family: model_info.respond_to?(:family) ? model_info.family : model_family_for(model),
+              usage_type: model_info.respond_to?(:embedding?) && model_info.embedding? ? :embedding : :inference,
               capabilities: policy[:capabilities],
               capability_sources: policy[:sources],
-              metadata: normalize_response(summary)
+              metadata: metadata,
+              health: health
             )
           end
 
@@ -908,9 +908,14 @@ module Legion
             )
           end
 
+          def offering_from_summary(summary, health: {})
+            offering_from_model(model_info_from_summary(summary), health:)
+          end
+
           def build_offering(model:, model_family:, usage_type:, instance_id: :default, alias_name: nil,
-                             capabilities: nil, capability_sources: nil, metadata: {})
+                             capabilities: nil, capability_sources: nil, metadata: {}, health: {})
             limits = infer_limits(model)
+            normalized_family = model_family&.to_sym
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :bedrock,
               instance_id: instance_id,
@@ -921,7 +926,8 @@ module Legion
               capabilities: capabilities || default_capabilities(model),
               capability_sources: capability_sources,
               limits: limits,
-              metadata: metadata.merge(model_family: model_family, alias: alias_name).compact
+              health: health,
+              metadata: metadata.merge(model_family: normalized_family, alias: alias_name).compact
             )
           end
 
@@ -1535,7 +1541,6 @@ module Legion
               caps << :streaming if value(summary, :response_streaming_supported)
             end
             caps << :vision if input_mods.include?('image')
-            caps << :tools if caps.include?(:completion)
             caps
           end
 
@@ -1545,51 +1550,13 @@ module Legion
             input_mods = Array(value(summary, :input_modalities)).map { |m| m.to_s.upcase }
             caps[:vision] = true if input_mods.include?('IMAGE')
             output_mods = Array(value(summary, :output_modalities)).map { |m| m.to_s.upcase }
-            caps[:embeddings] = true if output_mods.include?('EMBEDDING')
+            caps[:embedding] = true if output_mods.include?('EMBEDDING')
             caps
           end
 
           def provider_envelope_capabilities
             # Bedrock Converse API supports tool use across all active chat model families
             { tools: true }
-          end
-
-          def provider_capability_config
-            return {} unless defined?(Legion::Extensions::Llm::CredentialSources)
-
-            conf = Legion::Extensions::Llm::CredentialSources.setting(:extensions, :llm, :bedrock)
-            conf.is_a?(Hash) ? conf.to_h.except(:instances, 'instances') : {}
-          rescue StandardError => e
-            handle_exception(e, level: :warn, handled: true, operation: 'bedrock.provider_capability_config')
-            {}
-          end
-
-          def instance_capability_config
-            cfg = config
-            result = {}
-            %i[capabilities enable_thinking enable_tools enable_streaming enable_vision enable_embeddings
-               thinking_flag tools_flag streaming_flag vision_flag embedding_flag embeddings_flag
-               tool_flag images_flag image_flag].each do |key|
-              next unless cfg.respond_to?(key)
-
-              val = cfg.send(key)
-              result[key] = val unless val.nil?
-            rescue StandardError
-              next
-            end
-            result
-          end
-
-          def model_capability_config(model_id)
-            models_conf = nil
-            models_conf = config.models if config.respond_to?(:models)
-            models_conf ||= config[:models] if config.respond_to?(:[])
-            return {} unless models_conf.respond_to?(:to_h)
-
-            models_conf.to_h[model_id.to_s] || models_conf.to_h[model_id.to_sym] || {}
-          rescue StandardError => e
-            handle_exception(e, level: :warn, handled: true, operation: 'bedrock.model_capability_config')
-            {}
           end
 
           def model_family_for(model)

@@ -28,7 +28,6 @@ module Legion
               include Legion::Extensions::Llm::Inventory::ScopedRefresher
             end
 
-            REFRESH_INTERVAL = 1800
             EMBED_TYPES = %i[embed embedding].freeze
 
             def self.every_seconds = 3600
@@ -41,9 +40,9 @@ module Legion
             def generate_task?  = false
 
             def time
-              return REFRESH_INTERVAL unless defined?(Legion::Settings)
+              return self.class.every_seconds unless defined?(Legion::Settings)
 
-              Legion::Settings.dig(:extensions, :llm, :bedrock, :discovery_interval) || REFRESH_INTERVAL
+              Legion::Settings.dig(:extensions, :llm, :bedrock, :discovery_interval) || self.class.every_seconds
             end
 
             def scope_key(**)
@@ -85,7 +84,7 @@ module Legion
               adapter = instance[:adapter]
               return [] unless adapter.respond_to?(:discover_offerings)
 
-              Array(adapter.discover_offerings(live: false)).flat_map do |raw_offering|
+              Array(adapter.discover_offerings(live: true)).flat_map do |raw_offering|
                 offering = offering_to_hash(raw_offering)
                 next [] unless offering
 

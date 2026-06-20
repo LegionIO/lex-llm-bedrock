@@ -59,8 +59,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do # rubocop:disable R
 
       offering = provider.send(:offering_from_summary, embed_summary)
 
-      expect(offering.capabilities).to include(:embeddings)
-      expect(offering.capability_sources[:embeddings]).to eq({ value: true, source: :model_metadata })
+      expect(offering.capabilities).to include(:embedding)
+      expect(offering.capability_sources[:embedding]).to eq({ value: true, source: :model_metadata })
     end
 
     it 'resolves tools from provider_envelope when not in model metadata' do
