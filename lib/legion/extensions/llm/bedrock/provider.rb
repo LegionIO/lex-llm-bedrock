@@ -66,6 +66,7 @@ module Legion
                 bedrock_access_key_id
                 bedrock_secret_access_key
                 bedrock_session_token
+                bedrock_geo_prefix
                 bedrock_profile
                 bedrock_stub_responses
                 bearer_token
@@ -85,24 +86,19 @@ module Legion
 
             INFERENCE_PROFILE_PREFIXES = %w[anthropic. meta. mistral. cohere. ai21.].freeze
 
-            def inference_profile_id(model, region: nil)
-              return model if model.start_with?('us.', 'eu.', 'ap.', 'arn:')
-              return model unless INFERENCE_PROFILE_PREFIXES.any? { |p| model.start_with?(p) }
+            def inference_profile_id(model, geo_prefix: 'us', region: nil)
+              return model if model.start_with?('arn:')
 
-              prefix = region ? region_prefix(region) : 'us'
-              "#{prefix}.#{model}"
+              canonical = model.sub(/\A(?:us|eu|ap)\./, '')
+              return canonical unless INFERENCE_PROFILE_PREFIXES.any? { |p| canonical.start_with?(p) }
+
+              prefix = normalize_geo_prefix(geo_prefix || region)
+              "#{prefix}.#{canonical}"
             end
 
-            # Region-based inference profile prefix mapping.
-            # Bare model IDs (e.g. anthropic.claude-sonnet-4) get the region prefix.
-            REGION_PREFIX = {
-              'us-east-1' => 'us', 'us-east-2' => 'us', 'us-west-1' => 'us', 'us-west-2' => 'us',
-              'eu-central-1' => 'eu', 'eu-west-1' => 'eu', 'eu-west-2' => 'eu', 'eu-west-3' => 'eu',
-              'ap-south-1' => 'ap', 'ap-southeast-1' => 'ap', 'ap-southeast-2' => 'ap', 'ap-northeast-1' => 'ap'
-            }.freeze
-
-            def region_prefix(region)
-              REGION_PREFIX.fetch(region.to_s, 'us')
+            def normalize_geo_prefix(value)
+              candidate = value.to_s.downcase
+              %w[us eu ap].include?(candidate) ? candidate : 'us'
             end
           end
 
@@ -127,6 +123,10 @@ module Legion
             @translator ||= Translator.new(region: region)
           end
 
+          def settings
+            Bedrock.default_settings
+          end
+
           def api_base
             config.bedrock_endpoint || "https://bedrock-runtime.#{region}.amazonaws.com"
           end
@@ -141,25 +141,9 @@ module Legion
             config.bedrock_region || settings[:region] || 'us-east-1'
           end
 
-          def discover_offerings(live: false, **filters)
-            unless live
-              return @cached_offerings if @cached_offerings&.any?
-
-              log.debug { 'bedrock.provider.discover_offerings: returning static catalog' }
-              return static_offerings(**filters)
-            end
-
-            log.info { "bedrock.provider.discover_offerings: listing foundation models (region=#{region})" }
-            response = bedrock_client.list_foundation_models(**filters)
-            @cached_offerings = Array(value(response, :model_summaries)).filter_map do |summary|
-              offering = offering_from_summary(summary)
-              model_id = offering.respond_to?(:model) ? offering.model : (offering[:model] || offering[:id])
-              next unless model_allowed?(model_id.to_s)
-
-              offering
-            end
-            log.info { "bedrock.provider.discover_offerings: found #{@cached_offerings.size} models" }
-            @cached_offerings
+          def geo_prefix
+            configured = config.bedrock_geo_prefix if config.respond_to?(:bedrock_geo_prefix)
+            self.class.normalize_geo_prefix(configured || settings[:geo_prefix])
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -205,13 +189,24 @@ module Legion
             end
           end
 
-          def list_models(**)
+          def list_models(**filters)
+            request_filters = {}
+            request_filters[:by_provider] = filters[:by_provider] if filters[:by_provider]
+
             log.info { 'bedrock.provider.list_models: fetching live model list' }
-            response = bedrock_client.list_foundation_models
+            response = bedrock_client.list_foundation_models(**request_filters)
             models = Array(value(response, :model_summaries)).filter_map { |summary| model_info_from_summary(summary) }
             log.info { "bedrock.provider.list_models: found #{models.size} models" }
-            self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
             models
+          end
+
+          def discover_offerings(live: false, **filters)
+            return static_offerings(**filters) unless live
+
+            provider_health = health(live:)
+            @cached_offerings = discover_live_offerings(filters, provider_health, live:)
+            log_discover_complete(@cached_offerings)
+            @cached_offerings
           end
 
           def chat(
@@ -310,6 +305,42 @@ module Legion
             parse_converse_response(response, model_id(model))
           end
 
+          def discovery_registry_readiness(provider_health, live:)
+            {
+              provider: slug.to_sym,
+              configured: configured?,
+              ready: provider_health[:ready] == true,
+              live: live,
+              health: provider_health
+            }
+          end
+
+          def discover_live_offerings(filters, provider_health, live:)
+            readiness = discovery_registry_readiness(provider_health, live:)
+            Array(list_models(live:, **filters)).filter_map do |model|
+              self.class.registry_publisher.publish_models_async([model], readiness:)
+              next unless model_matches_filters?(model, filters)
+              next unless model_allowed?(model.id)
+
+              log_model_discovered(model)
+              offering_from_model(model, health: provider_health)
+            end
+          end
+
+          def log_model_discovered(model)
+            log.debug(
+              "[#{slug}] instance=#{provider_instance_id} action=model_discovered " \
+              "model=#{model.id} family=#{model.family}"
+            )
+          end
+
+          def log_discover_complete(offerings)
+            log.info(
+              "[#{slug}] instance=#{provider_instance_id} action=discover_complete " \
+              "model_count=#{Array(offerings).size}"
+            )
+          end
+
           def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
                      thinking: nil, **_provider_options, &)
             enforce_model_allowed!(model_id(model))
@@ -353,7 +384,7 @@ module Legion
             log.debug { "bedrock.provider.count_tokens: model=#{model_id(model)}" }
             request = Utils.deep_merge(
               {
-                model_id: self.class.inference_profile_id(model_id(model), region: region),
+                model_id: self.class.inference_profile_id(model_id(model), geo_prefix: geo_prefix),
                 input: { converse: { messages: format_messages(messages), system: system_blocks(system) }.compact }
               },
               params
@@ -425,7 +456,7 @@ module Legion
             log.debug { "bedrock.provider.invoke_model_chat: model=#{mid} thinking=#{thinking.inspect}" }
 
             response = runtime_client.invoke_model(
-              model_id: self.class.inference_profile_id(mid, region: region),
+              model_id: self.class.inference_profile_id(mid, geo_prefix: geo_prefix),
               content_type: 'application/json',
               accept: 'application/json',
               body: Legion::JSON.generate(body)
@@ -479,7 +510,7 @@ module Legion
 
             # rubocop:disable Metrics/BlockLength
             runtime_client.invoke_model_with_response_stream(
-              model_id: self.class.inference_profile_id(mid, region: region),
+              model_id: self.class.inference_profile_id(mid, geo_prefix: geo_prefix),
               content_type: 'application/json',
               accept: 'application/json',
               body: Legion::JSON.generate(body)
@@ -589,7 +620,10 @@ module Legion
               body[:tools] = tool_format[:tools]
               body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
             end
-            body[:thinking] = invoke_model_thinking(thinking) if thinking
+            if thinking
+              body[:thinking] =
+                invoke_model_thinking(model: rest[:model] || model_id(rest[:model]), thinking: thinking)
+            end
             body
           end
 
@@ -609,11 +643,17 @@ module Legion
             parts.map { |t| { type: 'text', text: t } }
           end
 
-          # Strip provider-specific keys (e.g. effort from OpenAI) that Bedrock/Anthropic APIs don't accept.
-          def invoke_model_thinking(thinking)
-            return thinking unless thinking.is_a?(Hash)
+          def invoke_model_thinking(model:, thinking:)
+            mid = model_id(model)
+            if mid.include?('claude-sonnet-4')
+              budget = if thinking.is_a?(Hash)
+                         thinking[:budget_tokens] || thinking['budget_tokens'] ||
+                           thinking[:budget] || thinking['budget']
+                       end
+              return { type: 'enabled', budget_tokens: budget }.compact
+            end
 
-            thinking.except(:effort, 'effort')
+            { type: 'adaptive' }
           end
 
           def format_invoke_model_messages(messages)
@@ -867,9 +907,16 @@ module Legion
             end
           end
 
-          def offering_from_summary(summary)
-            model = value(summary, :model_id)
-            real = real_capabilities_from_summary(summary)
+          def offering_from_model(model_info, health: {})
+            model = model_info.respond_to?(:id) ? model_info.id : model_info
+            real = if model_info.respond_to?(:capabilities)
+                     Array(model_info.capabilities).to_h do |capability|
+                       [capability.to_s.downcase.tr('-', '_').to_sym, true]
+                     end
+                   else
+                     {}
+                   end
+            metadata = model_info.respond_to?(:metadata) && model_info.metadata.is_a?(Hash) ? model_info.metadata : {}
             policy = Legion::Extensions::Llm::CapabilityPolicy.resolve(
               real: real,
               provider_catalog: {},
@@ -883,11 +930,12 @@ module Legion
             build_offering(
               model: model,
               alias_name: alias_for(model),
-              model_family: normalize_provider(value(summary, :provider_name)) || model_family_for(model),
-              usage_type: usage_type_from_modalities(value(summary, :output_modalities)),
+              model_family: model_info.respond_to?(:family) ? model_info.family : model_family_for(model),
+              usage_type: model_info.respond_to?(:embedding?) && model_info.embedding? ? :embedding : :inference,
               capabilities: policy[:capabilities],
               capability_sources: policy[:sources],
-              metadata: normalize_response(summary)
+              metadata: metadata,
+              health: health
             )
           end
 
@@ -908,9 +956,14 @@ module Legion
             )
           end
 
+          def offering_from_summary(summary, health: {})
+            offering_from_model(model_info_from_summary(summary), health:)
+          end
+
           def build_offering(model:, model_family:, usage_type:, instance_id: :default, alias_name: nil,
-                             capabilities: nil, capability_sources: nil, metadata: {})
+                             capabilities: nil, capability_sources: nil, metadata: {}, health: {})
             limits = infer_limits(model)
+            normalized_family = model_family&.to_sym
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :bedrock,
               instance_id: instance_id,
@@ -921,7 +974,8 @@ module Legion
               capabilities: capabilities || default_capabilities(model),
               capability_sources: capability_sources,
               limits: limits,
-              metadata: metadata.merge(model_family: model_family, alias: alias_name).compact
+              health: health,
+              metadata: metadata.merge(model_family: normalized_family, alias: alias_name).compact
             )
           end
 
@@ -941,7 +995,7 @@ module Legion
           def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:, guardrail_config: nil,
                                thinking: nil)
             {
-              model_id: self.class.inference_profile_id(model_id(model), region: region),
+              model_id: self.class.inference_profile_id(model_id(model), geo_prefix: geo_prefix),
               messages: format_messages(messages.reject { |message| message.role == :system }),
               system: format_system(messages),
               inference_config: { temperature: temperature, max_tokens: max_tokens || model_max_tokens(model) }.compact,
@@ -1535,7 +1589,6 @@ module Legion
               caps << :streaming if value(summary, :response_streaming_supported)
             end
             caps << :vision if input_mods.include?('image')
-            caps << :tools if caps.include?(:completion)
             caps
           end
 
@@ -1545,51 +1598,13 @@ module Legion
             input_mods = Array(value(summary, :input_modalities)).map { |m| m.to_s.upcase }
             caps[:vision] = true if input_mods.include?('IMAGE')
             output_mods = Array(value(summary, :output_modalities)).map { |m| m.to_s.upcase }
-            caps[:embeddings] = true if output_mods.include?('EMBEDDING')
+            caps[:embedding] = true if output_mods.include?('EMBEDDING')
             caps
           end
 
           def provider_envelope_capabilities
             # Bedrock Converse API supports tool use across all active chat model families
             { tools: true }
-          end
-
-          def provider_capability_config
-            return {} unless defined?(Legion::Extensions::Llm::CredentialSources)
-
-            conf = Legion::Extensions::Llm::CredentialSources.setting(:extensions, :llm, :bedrock)
-            conf.is_a?(Hash) ? conf.to_h.except(:instances, 'instances') : {}
-          rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'bedrock.provider_capability_config')
-            {}
-          end
-
-          def instance_capability_config
-            cfg = config
-            result = {}
-            %i[capabilities enable_thinking enable_tools enable_streaming enable_vision enable_embeddings
-               thinking_flag tools_flag streaming_flag vision_flag embedding_flag embeddings_flag
-               tool_flag images_flag image_flag].each do |key|
-              next unless cfg.respond_to?(key)
-
-              val = cfg.send(key)
-              result[key] = val unless val.nil?
-            rescue StandardError
-              next
-            end
-            result
-          end
-
-          def model_capability_config(model_id)
-            models_conf = nil
-            models_conf = config.models if config.respond_to?(:models)
-            models_conf ||= config[:models] if config.respond_to?(:[])
-            return {} unless models_conf.respond_to?(:to_h)
-
-            models_conf.to_h[model_id.to_s] || models_conf.to_h[model_id.to_sym] || {}
-          rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'bedrock.model_capability_config')
-            {}
           end
 
           def model_family_for(model)
