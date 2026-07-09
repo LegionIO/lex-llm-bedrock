@@ -63,8 +63,16 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do # rubocop:disable R
       expect(offering.capability_sources[:embedding]).to eq({ value: true, source: :model_metadata })
     end
 
-    it 'resolves tools from provider_envelope when not in model metadata' do
+    it 'resolves tools from the shared catalog for a cataloged Claude model' do
       offering = provider.send(:offering_from_summary, summary)
+
+      expect(offering.capabilities).to include(:tools)
+      expect(offering.capability_sources[:tools]).to eq({ value: true, source: :provider_catalog })
+    end
+
+    it 'falls back to provider_envelope for tools when the model is not in the catalog' do
+      uncataloged = summary.merge(model_id: 'anthropic.claude-not-a-real-model-v9:0')
+      offering = provider.send(:offering_from_summary, uncataloged)
 
       expect(offering.capabilities).to include(:tools)
       expect(offering.capability_sources[:tools]).to eq({ value: true, source: :provider_envelope })

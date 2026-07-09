@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.10] - 2026-07-09
+
+### Fixed
+- **Claude models now advertise the `:thinking` capability.** Discovery passed `provider_catalog: {}` to `CapabilityPolicy.resolve`, so per-model capabilities from the shared lex-llm catalog (which correctly tags Claude 3.7 / 4+ models `reasoning` → `:thinking`) were ignored — every Bedrock Claude model reported no thinking capability, so the router's thinking filter could not route thinking requests correctly. `offering_from_model` now consults the shared catalog via `catalog_capabilities`.
+- **Thinking payload no longer sends unsupported `adaptive` mode.** `invoke_model_thinking` / `build_invoke_thinking` (and the converse-path `bedrock_additional_fields` / `build_additional_fields`) previously emitted `{type: 'adaptive'}` for every non-`claude-sonnet-4` model, which Bedrock rejects with `ValidationException: adaptive thinking is not supported on this model` (HTTP 500, e.g. claude-opus-4-5). A new `ThinkingModes` module is the single source of truth shared by provider and translator: budgeted-thinking models emit `{type: 'enabled', budget_tokens: N}`; known non-thinking models omit thinking entirely. `adaptive` is never emitted.
+
 ## [0.4.9] - 2026-06-20
 
 ### Fixed

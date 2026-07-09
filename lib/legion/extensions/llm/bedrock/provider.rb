@@ -6,6 +6,7 @@ require 'aws-sdk-bedrockruntime'
 require 'legion/json'
 require 'legion/logging/helper'
 require 'legion/extensions/llm'
+require_relative 'thinking_modes'
 
 module Legion
   module Extensions
@@ -621,8 +622,8 @@ module Legion
               body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
             end
             if thinking
-              body[:thinking] =
-                invoke_model_thinking(model: rest[:model] || model_id(rest[:model]), thinking: thinking)
+              thinking_cfg = invoke_model_thinking(model: rest[:model] || model_id(rest[:model]), thinking: thinking)
+              body[:thinking] = thinking_cfg if thinking_cfg
             end
             body
           end
@@ -643,17 +644,19 @@ module Legion
             parts.map { |t| { type: 'text', text: t } }
           end
 
+          # Emit the thinking wire shape the model actually supports.
+          # Budgeted-thinking Claude models get { type: 'enabled', budget_tokens: N }.
+          # Every other model returns nil so the caller OMITS the thinking field —
+          # Bedrock rejects { type: 'adaptive' } with a ValidationException (HTTP 500).
           def invoke_model_thinking(model:, thinking:)
             mid = model_id(model)
-            if mid.include?('claude-sonnet-4')
-              budget = if thinking.is_a?(Hash)
-                         thinking[:budget_tokens] || thinking['budget_tokens'] ||
-                           thinking[:budget] || thinking['budget']
-                       end
-              return { type: 'enabled', budget_tokens: budget }.compact
-            end
+            return nil if ThinkingModes.known_non_thinking?(mid)
 
-            { type: 'adaptive' }
+            budget = if thinking.is_a?(Hash)
+                       thinking[:budget_tokens] || thinking['budget_tokens'] ||
+                         thinking[:budget] || thinking['budget']
+                     end
+            { type: 'enabled', budget_tokens: budget }.compact
           end
 
           def format_invoke_model_messages(messages)
@@ -919,7 +922,7 @@ module Legion
             metadata = model_info.respond_to?(:metadata) && model_info.metadata.is_a?(Hash) ? model_info.metadata : {}
             policy = Legion::Extensions::Llm::CapabilityPolicy.resolve(
               real: real,
-              provider_catalog: {},
+              provider_catalog: catalog_capabilities(model),
               probe: {},
               provider_envelope: provider_envelope_capabilities,
               provider_config: provider_capability_config,
@@ -1001,13 +1004,13 @@ module Legion
               inference_config: { temperature: temperature, max_tokens: max_tokens || model_max_tokens(model) }.compact,
               tool_config: format_tool_config(tools, tool_prefs),
               guardrail_config: guardrail_config,
-              additional_model_request_fields: bedrock_additional_fields(thinking)
+              additional_model_request_fields: bedrock_additional_fields(thinking, model: model_id(model))
             }.compact
           end
 
-          def bedrock_additional_fields(thinking)
+          def bedrock_additional_fields(thinking, model:)
             fields = {}
-            if thinking
+            if thinking && !ThinkingModes.known_non_thinking?(model)
               fields[:thinking] = {
                 type: 'enabled',
                 budget_tokens: if thinking.is_a?(Hash)
@@ -1605,6 +1608,23 @@ module Legion
           def provider_envelope_capabilities
             # Bedrock Converse API supports tool use across all active chat model families
             { tools: true }
+          end
+
+          # Capability truth from the shared lex-llm catalog (models.json), keyed by
+          # bedrock model id. This is the source of truth for per-model capabilities
+          # (e.g. :thinking for Claude 4+) that the live AWS ListFoundationModels
+          # summary does not expose. Surfaced to CapabilityPolicy as :provider_catalog
+          # so operator/instance/model overrides still win, and the boolean map is fed
+          # through the shared Capabilities alias table (reasoning -> :thinking).
+          def catalog_capabilities(model)
+            info = Legion::Extensions::Llm::Models.find(model.to_s, :bedrock)
+            caps = Legion::Extensions::Llm::Capabilities.normalize(info.capabilities)
+            caps.to_h { |cap| [cap, true] }
+          rescue Legion::Extensions::Llm::ModelNotFoundError
+            {}
+          rescue StandardError => e
+            handle_exception(e, level: :warn, handled: true, operation: 'bedrock.provider.catalog_capabilities')
+            {}
           end
 
           def model_family_for(model)

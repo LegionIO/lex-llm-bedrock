@@ -3,6 +3,7 @@
 require 'legion/json'
 require 'legion/logging/helper'
 require 'legion/extensions/llm/canonical'
+require_relative 'thinking_modes'
 
 module Legion
   module Extensions
@@ -178,6 +179,7 @@ module Legion
 
           def build_additional_fields(canonical)
             return nil unless canonical.thinking
+            return nil if ThinkingModes.known_non_thinking?(model_from_request(canonical))
 
             budget = canonical_thinking_budget(canonical)
             budget ||= DEFAULT_MAX_TOKENS / 4
@@ -253,17 +255,17 @@ module Legion
             body.compact
           end
 
+          # Emit the thinking wire shape the model supports. Budgeted-thinking
+          # Claude models get { type: 'enabled', budget_tokens: N }; every other
+          # model returns nil so render_invoke_model OMITS the thinking field.
+          # Bedrock rejects { type: 'adaptive' } (ValidationException -> HTTP 500).
           def build_invoke_thinking(canonical)
             return nil unless canonical.thinking
+            return nil if ThinkingModes.known_non_thinking?(model_from_request(canonical))
 
-            model = model_from_request(canonical)
-            if model.to_s.include?('claude-sonnet-4')
-              budget = canonical_thinking_budget(canonical)
-              budget ||= DEFAULT_MAX_TOKENS / 4
-              return { type: 'enabled', budget_tokens: budget }
-            end
-
-            { type: 'adaptive' }
+            budget = canonical_thinking_budget(canonical)
+            budget ||= DEFAULT_MAX_TOKENS / 4
+            { type: 'enabled', budget_tokens: budget }
           end
 
           def render_invoke_system(canonical)
