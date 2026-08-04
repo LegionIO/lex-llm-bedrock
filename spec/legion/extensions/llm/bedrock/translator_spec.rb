@@ -251,7 +251,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
       expect(wire).not_to have_key(:output_config)
     end
 
-    it 'renders adaptive thinking config for non-sonnet anthropic invoke_model requests' do
+    it 'renders enabled+budget thinking for other budgeted-thinking Claude 4 models (opus-4)' do
       req = canonical::Request.build(
         messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
         thinking: { budget: 2048, effort: 'high' },
@@ -259,7 +259,18 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
       )
 
       wire = translator.render_request(req, target: :invoke_model)
-      expect(wire[:thinking][:type]).to eq('adaptive')
+      expect(wire[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
+    end
+
+    it 'OMITS thinking (never adaptive) for a non-thinking Claude model on invoke_model' do
+      req = canonical::Request.build(
+        messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
+        thinking: { budget: 2048, effort: 'high' },
+        metadata: { model: 'anthropic.claude-3-haiku-20240307-v1:0' }
+      )
+
+      wire = translator.render_request(req, target: :invoke_model)
+      expect(wire).not_to have_key(:thinking)
     end
 
     it 'renders tool_choice as required in invoke_model' do
