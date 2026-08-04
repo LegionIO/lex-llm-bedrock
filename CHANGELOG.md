@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.10] - 2026-07-09
+## [0.4.10] - 2026-08-04
 
 ### Fixed
 - **Claude models now advertise the `:thinking` capability.** Discovery passed `provider_catalog: {}` to `CapabilityPolicy.resolve`, so per-model capabilities from the shared lex-llm catalog (which correctly tags Claude 3.7 / 4+ models `reasoning` → `:thinking`) were ignored — every Bedrock Claude model reported no thinking capability, so the router's thinking filter could not route thinking requests correctly. `offering_from_model` now consults the shared catalog via `catalog_capabilities`.
