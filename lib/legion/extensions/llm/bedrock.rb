@@ -20,16 +20,11 @@ module Legion
         PROVIDER_FAMILY = :bedrock
 
         DEFAULT_REGION = 'us-east-2'
-        # Provider's preferred default when the operator configures none. Used only
-        # as a fallback and only when the configured model policy permits it
-        # (see resolve_default_model) — a whitelist/blacklist is never overridden.
-        DEFAULT_MODEL = 'anthropic.claude-sonnet-4'
 
         def self.default_settings
           ::Legion::Extensions::Llm.provider_settings(
             family: PROVIDER_FAMILY,
             instance: {
-              default_model: DEFAULT_MODEL,
               region: 'us-east-1',
               geo_prefix: 'us',
               tier: :cloud,
@@ -80,26 +75,8 @@ module Legion
                            .transform_values do |config|
             sanitized = sanitize_instance_config(config)
             sanitized[:capabilities] ||= DEFAULT_CAPABILITIES.dup
-            sanitized[:default_model] = resolve_default_model(sanitized)
             sanitized
           end
-        end
-
-        # Resolve a default_model that never violates the configured model policy
-        # (whitelist/blacklist stays authoritative over the DEFAULT_MODEL fallback).
-        def self.resolve_default_model(config)
-          cfg = config.is_a?(Hash) ? config : {}
-          provider_conf = CredentialSources.setting(:extensions, :llm, PROVIDER_FAMILY)
-          provider_conf = {} unless provider_conf.is_a?(Hash)
-          global_conf = (::Legion::Settings.dig(:extensions, :llm) if defined?(::Legion::Settings))
-          global_conf = {} unless global_conf.is_a?(Hash)
-
-          provider_class.policy_safe_default_model(
-            configured: cfg[:default_model],
-            fallback: DEFAULT_MODEL,
-            whitelist: provider_class.resolve_policy_value(cfg, provider_conf, global_conf, :model_whitelist),
-            blacklist: provider_class.resolve_policy_value(cfg, provider_conf, global_conf, :model_blacklist)
-          )
         end
 
         def self.unresolved_credential?(config)

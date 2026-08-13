@@ -45,7 +45,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     expect(settings[:enabled]).to be true
     expect(settings[:provider_family]).to eq(:bedrock)
-    expect(instance[:default_model]).to eq('anthropic.claude-sonnet-4')
+    expect(instance).not_to have_key(:default_model)
     expect(instance.dig(:provider, :region)).to eq('us-east-2')
     expect(instance[:transport]).to eq(:aws_sdk)
     expect(instance.dig(:fleet, :respond_to_requests)).to be false
@@ -323,29 +323,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       expect { provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0') }
         .to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
       expect(runtime_client).not_to have_received(:invoke_model)
-    end
-  end
-
-  describe '.resolve_default_model (policy-aware default)' do
-    before { allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting).with(:extensions, :llm, :bedrock).and_return(nil) }
-
-    it 'keeps a configured default when no policy is set' do
-      expect(described_class.resolve_default_model(default_model: 'amazon.nova-pro-v1:0')).to eq('amazon.nova-pro-v1:0')
-    end
-
-    it 'falls back to DEFAULT_MODEL when none configured and no policy' do
-      expect(described_class.resolve_default_model({})).to eq(described_class::DEFAULT_MODEL)
-    end
-
-    it 'drops a configured default the whitelist forbids rather than forcing it' do
-      expect(described_class.resolve_default_model(default_model: 'anthropic.claude-sonnet-4',
-                                                   model_whitelist: %w[haiku])).to be_nil
-    end
-
-    it 'reads the provider-level whitelist when the instance config has none' do
-      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting).with(:extensions, :llm, :bedrock)
-                                                                            .and_return({ model_whitelist: %w[haiku] })
-      expect(described_class.resolve_default_model(default_model: 'anthropic.claude-sonnet-4')).to be_nil
     end
   end
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0] - 2026-08-13
+
+### Changed
+- **SSOT v3 provider migration** — Discovery actor completely rewritten to use `Inventory::Publisher`, `ProbeCoordinator`, and `BedrockCallable`. Each credential/region pair publishes as an exact instance with full operation evidence per model. No default model, no Legion::LLM reverse dependency.
+- **Dependency floor** — `lex-llm >= 0.7.0` (Inventory v3 API).
+- **Removed** `DEFAULT_MODEL` constant, `resolve_default_model`, and default model injection from `discover_instances`. SSOT v3 forbids provider-level model defaults — the router selects models from published offerings.
+
+### Added
+- **BedrockCallable** — Implements `disconnect` and `normalize_dispatch_error` with full AWS error classification. Only `Aws::BedrockRuntime::Errors::ServiceUnavailableException` maps to `:instance_unavailable`; all other 5xx/transient errors map to `:overloaded`.
+- **Conformance spec** — `it_behaves_like 'an SSOT v3 provider adapter'` plus Bedrock-specific identity derivation, error classification, and isolation tests.
+
 ## [0.4.10] - 2026-08-04
 
 ### Fixed
