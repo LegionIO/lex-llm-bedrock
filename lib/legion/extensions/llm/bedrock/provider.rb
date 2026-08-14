@@ -147,7 +147,7 @@ module Legion
             self.class.normalize_geo_prefix(configured || settings[:geo_prefix])
           end
 
-          def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
+          def offering_for(model:, model_family: nil, instance_id: nil, **metadata)
             model_id = self.class.resolve_model_id(model)
             build_offering(
               model: model_id,
@@ -963,7 +963,7 @@ module Legion
             offering_from_model(model_info_from_summary(summary), health:)
           end
 
-          def build_offering(model:, model_family:, usage_type:, instance_id: :default, alias_name: nil,
+          def build_offering(model:, model_family:, usage_type:, instance_id: nil, alias_name: nil,
                              capabilities: nil, capability_sources: nil, metadata: {}, health: {})
             limits = infer_limits(model)
             normalized_family = model_family&.to_sym

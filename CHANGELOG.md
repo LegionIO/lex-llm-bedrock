@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-08-13
+
+### Fixed
+- **SSOT v3 compliance sweep** — Removed all `# rubocop:disable` directives from source and specs. Replaced swallowed `rescue nil` in probe cleanup with `handle_exception` logging. Removed `|| default` settings guards by registering `discovery_interval:` in `default_settings`. Removed `:default` instance_id fallbacks from `offering_for` and `build_offering`. Split `DiscoveryRefresh` into six focused private modules to satisfy `Metrics/ClassLength` and `Metrics/ModuleLength` without inline disables.
+- **Health firewall** — `connection_failure` / timeout / overload / generic-5xx remain request-local; only `Aws::BedrockRuntime::Errors::ServiceUnavailableException` maps to `:instance_unavailable`. Conformance harness mapping corrected.
+
 ## [0.5.0] - 2026-08-13
 
 ### Changed

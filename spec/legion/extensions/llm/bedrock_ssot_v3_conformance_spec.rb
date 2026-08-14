@@ -18,8 +18,6 @@ require 'legion/extensions/llm/fleet/protocol'
 # Load BedrockCallable directly — it has no actor-runtime dependency.
 require 'legion/extensions/llm/bedrock/callable'
 
-# rubocop:disable RSpec/MultipleMemoizedHelpers
-
 # Test-local callable that extends BedrockCallable with dispatch operations
 # required by FleetWorkerExecution. Tracks inference call count for
 # conformance assertions.
@@ -391,22 +389,23 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   describe 'startup gating' do
     let(:config) { ssot_harness.instance_configs[0] }
-    let(:instance_id) { ssot_harness.instance_id(instance_config: config) }
     let(:key) do
       Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :bedrock, instance_id: instance_id
+        provider_family: :bedrock, instance_id: ssot_harness.instance_id(instance_config: config)
       )
     end
-    let(:publisher) { Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock) }
-    let(:callable) { ssot_harness.build_callable(instance_config: config) }
-    let(:coordinator) do
-      Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
+
+    before do
+      @publisher   = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
+      @callable    = ssot_harness.build_callable(instance_config: config)
+      @coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
     end
 
     it 'remains initializing until readiness probe succeeds' do
-      publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
+      iid = ssot_harness.instance_id(instance_config: config)
+      @publisher.claim_instance(instance_id: iid, callable: @callable, probe_request_handle: @coordinator)
 
       snapshot = registry.snapshot
       expect(snapshot.instance(instance_key: key)).to be_nil
@@ -414,10 +413,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end
 
     it 'stays initializing after an initial readiness failure' do
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
-      publisher.readiness_failed(instance_id: instance_id, probe_token: probe,
-                                 reason: 'Bedrock ListFoundationModels failed: AccessDenied')
+      iid = ssot_harness.instance_id(instance_config: config)
+      token = @publisher.claim_instance(instance_id: iid, callable: @callable, probe_request_handle: @coordinator)
+      probe = @publisher.readiness_probe_started(instance_id: iid, publisher_token: token)
+      @publisher.readiness_failed(instance_id: iid, probe_token: probe,
+                                  reason: 'Bedrock ListFoundationModels failed: AccessDenied')
 
       snapshot = registry.snapshot
       expect(snapshot.instance(instance_key: key)).to be_nil
@@ -425,11 +425,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end
 
     it 'transitions to available after readiness success' do
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
-      drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :cloud)
-      publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+      iid   = ssot_harness.instance_id(instance_config: config)
+      token = @publisher.claim_instance(instance_id: iid, callable: @callable, probe_request_handle: @coordinator)
+      probe = @publisher.readiness_probe_started(instance_id: iid, publisher_token: token)
+      drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: @callable, tier: :cloud)
+      @publisher.activate_instance_snapshot(
+        instance_id: iid, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
       )
 
       snapshot = registry.snapshot
@@ -742,5 +743,3 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end
   end
 end
-
-# rubocop:enable RSpec/MultipleMemoizedHelpers

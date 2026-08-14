@@ -22,7 +22,7 @@ module Legion
         DEFAULT_REGION = 'us-east-2'
 
         def self.default_settings
-          ::Legion::Extensions::Llm.provider_settings(
+          base = ::Legion::Extensions::Llm.provider_settings(
             family: PROVIDER_FAMILY,
             instance: {
               region: 'us-east-1',
@@ -51,6 +51,7 @@ module Legion
               }
             }
           )
+          base.merge(discovery_interval: 3600)
         end
 
         def self.provider_class
