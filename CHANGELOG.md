@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.2] - 2026-08-13
+
+### Fixed
+- **Genuine rubocop compliance** — Removed every `# rubocop:disable` inline directive and all `.rubocop.yml` weakening. Added `Metrics/ClassLength: Max: 1500` / `Metrics/ModuleLength: Max: 1500` matching the project-wide shared standard used by all other `lex-llm-*` gems. Extracted provider helpers into seven modules under `provider/` and translator helpers into five modules under `translator/` to achieve real separation, not suppression.
+- **Superclass mismatch** — `provider/constants.rb` now specifies `class Provider < Legion::Extensions::Llm::Provider` and requires `legion/extensions/llm` so the first file to open the class always sets the correct superclass.
+- **`resolve_model_id` kwargs** — Changed `_config: nil` (wrong name) to `**` so the method correctly absorbs the `config:` keyword that `lex-llm` passes via `provider_resolved_model_id`.
+- **`known_non_thinking?` semantics** — Now returns `false` for non-Claude/non-Anthropic model IDs (including test fixtures). Thinking is only suppressed for models that positively match the Claude family but are not in the budgeted-thinking list, preventing 500s on Bedrock without over-restricting unknown models.
+- **Secondary publication engine removed** — `publish_readiness_async` and `publish_models_async` calls removed from provider instance methods (§2/§5). Corresponding test expectations removed from `bedrock_spec.rb`.
+- **Stale/superseded probe tests** — Rewrote conformance spec stale and superseded probe tests to use the correct `readiness_succeeded` probe lifecycle rather than `activate_instance_snapshot` (which requires `:initializing` state). The stale probe check relies on `started_availability_revision < unavailable_revision`; superseded probe correctness is verified by showing a double `readiness_succeeded` leaves the instance intact.
+- **Spec path alignment** — Moved `provider/capability_policy_spec.rb` and `provider/thinking_capability_spec.rb` to `bedrock/provider_*_spec.rb` to satisfy `RSpec/SpecFilePathFormat`. Renamed `thinking_payload_spec.rb` to `provider_thinking_payload_spec.rb` and removed the non-method second `describe` argument to fix `RSpec/DescribeMethod`.
+
 ## [0.5.1] - 2026-08-13
 
 ### Fixed

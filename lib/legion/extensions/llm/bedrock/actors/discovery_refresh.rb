@@ -361,32 +361,12 @@ module Legion
             end
 
             def configured_instances
-              instances = {}
               cfg_instances = settings[:instances]
-              if cfg_instances.is_a?(Hash)
-                cfg_instances.each do |name, config|
-                  instances[name.to_sym] = normalize_instance_config(config: config)
-                end
-              end
-              instances[:default_instance] = build_default_instance_config if instances.empty?
-              instances
-            end
+              return {} unless cfg_instances.is_a?(Hash)
 
-            def build_default_instance_config
-              inst  = settings[:instances][:default]
-              creds = inst[:credentials]
-              prov  = inst[:provider]
-              {
-                bedrock_region: inst[:region],
-                bedrock_geo_prefix: inst[:geo_prefix],
-                bearer_token: creds[:bearer_token],
-                bedrock_access_key_id: creds[:access_key_id],
-                bedrock_secret_access_key: creds[:secret_access_key],
-                bedrock_session_token: creds[:session_token],
-                bedrock_profile: creds[:profile],
-                bedrock_endpoint: prov[:endpoint],
-                tier: inst[:tier]
-              }.compact
+              cfg_instances.to_h do |name, config|
+                [name.to_sym, normalize_instance_config(config: config)]
+              end
             end
 
             def normalize_instance_config(config:)

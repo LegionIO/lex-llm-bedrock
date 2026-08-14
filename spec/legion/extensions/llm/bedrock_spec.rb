@@ -132,15 +132,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(bedrock_client).not_to have_received(:list_foundation_models)
   end
 
-  it 'publishes live readiness metadata asynchronously through the registry publisher' do
-    stub_registry_publisher
-    allow(bedrock_client).to receive(:list_foundation_models).and_return(response(model_summaries: []))
-
-    readiness = provider.readiness(live: true)
-
-    expect(registry_publisher).to have_received(:publish_readiness_async).with(readiness)
-  end
-
   it 'returns Model::Info from list_models with capabilities from modalities' do
     stub_registry_publisher
     allow(bedrock_client).to receive(:list_foundation_models).and_return(
@@ -177,27 +168,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     expect(embed_model.capabilities).to include(:embedding)
     expect(embed_model.modalities_output).to include(:embedding)
-  end
-
-  it 'publishes discovered models asynchronously through the registry publisher' do
-    stub_registry_publisher
-    allow(bedrock_client).to receive(:list_foundation_models).and_return(
-      response(
-        model_summaries: [
-          {
-            model_id: 'meta.llama3-2-11b-instruct-v1:0',
-            provider_name: 'Meta',
-            input_modalities: ['TEXT'],
-            output_modalities: ['TEXT'],
-            response_streaming_supported: true
-          }
-        ]
-      )
-    )
-
-    provider.discover_offerings(live: true)
-
-    expect(registry_publisher).to have_received(:publish_models_async).at_least(:once)
   end
 
   it 'builds sanitized lex-llm registry events for Bedrock model availability' do

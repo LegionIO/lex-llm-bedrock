@@ -164,10 +164,21 @@ class BedrockSsotHarness
   end
 
   def safe_readiness(instance_config:, **)
+    region = instance_config[:bedrock_region] || 'us-east-1'
+    # Use stub_responses: true to exercise the real list_foundation_models code path
+    # without issuing actual AWS API calls (safe in any environment).
+    client = Aws::Bedrock::Client.new(region: region, stub_responses: true)
+    client.list_foundation_models
     Legion::Extensions::Llm::Inventory::ReadinessResult.new(
       ready: true,
       reason: 'Bedrock ListFoundationModels succeeded',
-      metadata: { region: instance_config[:bedrock_region] || 'us-east-1' }
+      metadata: { region: region }
+    )
+  rescue StandardError => e
+    Legion::Extensions::Llm::Inventory::ReadinessResult.new(
+      ready: false,
+      reason: "Bedrock health check failed: #{e.message}",
+      metadata: { region: region, error: e.class.name }
     )
   end
 
@@ -725,6 +736,87 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       callable = ssot_harness.build_callable(instance_config: config)
       ssot_harness.safe_readiness(instance_config: config, callable: callable)
       expect(ssot_harness.inference_call_count(callable: callable)).to eq(0)
+    end
+  end
+
+  # ─── Stale and superseded probe non-recovery ──────────────────────────────
+
+  describe 'stale/superseded readiness probe non-recovery' do
+    def bring_up(config)
+      publisher  = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
+      iid        = ssot_harness.instance_id(instance_config: config)
+      key        = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+        provider_family: :bedrock, instance_id: iid
+      )
+      callable   = ssot_harness.build_callable(instance_config: config)
+      coord      = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
+        instance_key: key, enqueue: ->(**) { true }
+      )
+      token  = publisher.claim_instance(instance_id: iid, callable: callable, probe_request_handle: coord)
+      probe  = publisher.readiness_probe_started(instance_id: iid, publisher_token: token)
+      drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :cloud)
+      publisher.activate_instance_snapshot(
+        instance_id: iid, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+      )
+      { publisher: publisher, key: key, iid: iid, token: token, callable: callable }
+    end
+
+    let(:config) { ssot_harness.instance_configs[0] }
+
+    it 'a stale probe started before unavailable does not recover the instance' do
+      ctx = bring_up(config)
+
+      # Capture a probe token started while the instance is active (the "stale" probe).
+      # Its started_availability_revision is set to the current revision at this point.
+      stale_probe = ctx[:publisher].readiness_probe_started(
+        instance_id: ctx[:iid], publisher_token: ctx[:token]
+      )
+
+      # Mark instance unavailable (bumps unavailable_revision above the probe's started_revision)
+      registry.dispatch_instance_unavailable(
+        instance_key: ctx[:key],
+        publisher_token_id: ctx[:token].publisher_token_id,
+        reason: 'ServiceUnavailableException — instance went down'
+      )
+      expect(registry.snapshot.instance(instance_key: ctx[:key]).availability.state).to eq(:unavailable)
+
+      # The stale probe completes — but since started_revision < unavailable_revision,
+      # the registry rejects recovery (returns reason: :stale_probe, does not transition to :available)
+      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], probe_token: stale_probe)
+
+      failure_msg = 'stale probe must not recover an instance that became unavailable after the probe was issued'
+      expect(registry.snapshot.instance(instance_key: ctx[:key]).availability.state).to eq(:unavailable), failure_msg
+    end
+
+    it 'a superseded probe does not corrupt an instance recovered by a newer probe' do
+      ctx = bring_up(config)
+
+      # Bring the instance down so we can run two recovery probes
+      registry.dispatch_instance_unavailable(
+        instance_key: ctx[:key],
+        publisher_token_id: ctx[:token].publisher_token_id,
+        reason: 'test forced unavailable'
+      )
+
+      # Both probe_a and probe_b are started after unavailable; either can recover the instance.
+      # probe_b finishes first (it is "newer" in the recovery race).
+      probe_a = ctx[:publisher].readiness_probe_started(
+        instance_id: ctx[:iid], publisher_token: ctx[:token]
+      )
+      probe_b = ctx[:publisher].readiness_probe_started(
+        instance_id: ctx[:iid], publisher_token: ctx[:token]
+      )
+
+      # probe_b recovers the instance
+      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], probe_token: probe_b)
+      expect(registry.snapshot.instance(instance_key: ctx[:key]).availability.state).to eq(:available)
+
+      # probe_a then also reports success — the registry must not corrupt or remove the instance
+      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], probe_token: probe_a)
+
+      failure_msg2 = 'superseded probe should not corrupt or remove an already-available instance'
+      expect(registry.snapshot.instance(instance_key: ctx[:key])).not_to be_nil, failure_msg2
+      expect(registry.snapshot.instance(instance_key: ctx[:key]).availability.state).to eq(:available)
     end
   end
 

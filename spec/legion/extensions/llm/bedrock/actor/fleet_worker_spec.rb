@@ -16,7 +16,7 @@ end
 
 require 'legion/extensions/llm/bedrock/actors/fleet_worker'
 
-RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::FleetWorker do # rubocop:disable RSpec/SpecFilePathFormat
+RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::FleetWorker do
   subject(:actor) { described_class.new }
 
   it 'uses the shared logging helper' do

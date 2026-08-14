@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do # rubocop:disable RSpec/SpecFilePathFormat
+RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
   let(:credential_sources) { Legion::Extensions::Llm::CredentialSources }
   let(:base_config) do
     {

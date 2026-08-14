@@ -16,6 +16,10 @@ Metrics/BlockLength:
   Exclude:
     - "*.gemspec"
     - spec/**/*
+Metrics/ClassLength:
+  Max: 1500
+Metrics/ModuleLength:
+  Max: 1500
 Metrics/MethodLength:
   Enabled: false
 Metrics/ParameterLists:

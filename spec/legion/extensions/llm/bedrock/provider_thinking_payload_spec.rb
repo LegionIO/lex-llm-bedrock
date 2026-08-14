@@ -7,66 +7,64 @@ require 'legion/extensions/llm/bedrock/translator'
 # - Models that support explicit budgeted thinking -> { type: 'enabled', budget_tokens: N }
 # - Models that do NOT support thinking -> OMIT the thinking field (nil), never { type: 'adaptive' }
 #   because Bedrock rejects adaptive on those models (ValidationException -> HTTP 500).
-RSpec.describe 'Bedrock thinking payload shape' do # rubocop:disable RSpec/DescribeClass
-  describe Legion::Extensions::Llm::Bedrock::Provider do
-    let(:base_config) do
-      {
-        bedrock_region: 'us-east-1',
-        bedrock_stub_responses: true,
-        bearer_token: 'test-token'
-      }
-    end
+RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
+  let(:base_config) do
+    {
+      bedrock_region: 'us-east-1',
+      bedrock_stub_responses: true,
+      bearer_token: 'test-token'
+    }
+  end
 
-    let(:provider) do
-      p = described_class.allocate
-      p.instance_variable_set(:@config, Legion::Extensions::Llm::HashConfig.new(base_config))
-      p
-    end
+  let(:provider) do
+    p = described_class.allocate
+    p.instance_variable_set(:@config, Legion::Extensions::Llm::HashConfig.new(base_config))
+    p
+  end
 
-    describe '#invoke_model_thinking' do
-      it 'returns { type: enabled, budget_tokens } for a budgeted-thinking model (opus-4-5)' do
-        result = provider.send(:invoke_model_thinking,
-                               model: 'anthropic.claude-opus-4-5-20251101-v1:0',
-                               thinking: { budget_tokens: 2048 })
-
-        expect(result).to eq({ type: 'enabled', budget_tokens: 2048 })
-      end
-
-      it 'returns { type: enabled, budget_tokens } for claude-sonnet-4' do
-        result = provider.send(:invoke_model_thinking,
-                               model: 'anthropic.claude-sonnet-4-20250514-v1:0',
-                               thinking: { budget_tokens: 1500 })
-
-        expect(result).to eq({ type: 'enabled', budget_tokens: 1500 })
-      end
-
-      it 'OMITS thinking (nil), never adaptive, for a non-thinking model (claude-3-haiku)' do
-        result = provider.send(:invoke_model_thinking,
-                               model: 'anthropic.claude-3-haiku-20240307-v1:0',
-                               thinking: { budget_tokens: 2048 })
-
-        expect(result).to be_nil
-      end
-    end
-
-    describe '#build_invoke_model_body' do
-      it 'omits the thinking key entirely for a non-thinking model' do
-        body = provider.send(:build_invoke_model_body,
-                             messages: [], model: 'anthropic.claude-3-haiku-20240307-v1:0',
-                             temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
+  describe '#invoke_model_thinking' do
+    it 'returns { type: enabled, budget_tokens } for a budgeted-thinking model (opus-4-5)' do
+      result = provider.send(:invoke_model_thinking,
+                             model: 'anthropic.claude-opus-4-5-20251101-v1:0',
                              thinking: { budget_tokens: 2048 })
 
-        expect(body).not_to have_key(:thinking)
-      end
+      expect(result).to eq({ type: 'enabled', budget_tokens: 2048 })
+    end
 
-      it 'includes an enabled thinking block for a thinking model' do
-        body = provider.send(:build_invoke_model_body,
-                             messages: [], model: 'anthropic.claude-opus-4-5-20251101-v1:0',
-                             temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
+    it 'returns { type: enabled, budget_tokens } for claude-sonnet-4' do
+      result = provider.send(:invoke_model_thinking,
+                             model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+                             thinking: { budget_tokens: 1500 })
+
+      expect(result).to eq({ type: 'enabled', budget_tokens: 1500 })
+    end
+
+    it 'OMITS thinking (nil), never adaptive, for a non-thinking model (claude-3-haiku)' do
+      result = provider.send(:invoke_model_thinking,
+                             model: 'anthropic.claude-3-haiku-20240307-v1:0',
                              thinking: { budget_tokens: 2048 })
 
-        expect(body[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
-      end
+      expect(result).to be_nil
+    end
+  end
+
+  describe '#build_invoke_model_body' do
+    it 'omits the thinking key entirely for a non-thinking model' do
+      body = provider.send(:build_invoke_model_body,
+                           messages: [], model: 'anthropic.claude-3-haiku-20240307-v1:0',
+                           temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
+                           thinking: { budget_tokens: 2048 })
+
+      expect(body).not_to have_key(:thinking)
+    end
+
+    it 'includes an enabled thinking block for a thinking model' do
+      body = provider.send(:build_invoke_model_body,
+                           messages: [], model: 'anthropic.claude-opus-4-5-20251101-v1:0',
+                           temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
+                           thinking: { budget_tokens: 2048 })
+
+      expect(body[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
     end
   end
 

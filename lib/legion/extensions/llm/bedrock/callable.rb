@@ -96,8 +96,9 @@ module Legion
             end
 
             def overloaded_error?(error:)
-              defined?(Legion::Extensions::Llm::OverloadedError) &&
-                error.is_a?(Legion::Extensions::Llm::OverloadedError)
+              error.is_a?(Legion::Extensions::Llm::OverloadedError)
+            rescue NameError
+              false
             end
 
             def timeout_error?(error:)
