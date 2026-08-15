@@ -3,12 +3,12 @@
 require 'legion/json'
 require 'legion/logging/helper'
 require 'legion/extensions/llm/canonical'
-require_relative 'thinking_modes'
-require_relative 'translator/read_helpers'
-require_relative 'translator/request_rendering'
-require_relative 'translator/message_rendering'
-require_relative 'translator/response_parsing'
-require_relative 'translator/chunk_parsing'
+require 'legion/extensions/llm/bedrock/thinking_modes'
+require 'legion/extensions/llm/bedrock/translator/read_helpers'
+require 'legion/extensions/llm/bedrock/translator/request_rendering'
+require 'legion/extensions/llm/bedrock/translator/message_rendering'
+require 'legion/extensions/llm/bedrock/translator/response_parsing'
+require 'legion/extensions/llm/bedrock/translator/chunk_parsing'
 
 module Legion
   module Extensions

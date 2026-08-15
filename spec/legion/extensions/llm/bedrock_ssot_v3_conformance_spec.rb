@@ -15,175 +15,80 @@ require 'legion/extensions/llm/capabilities'
 require 'legion/extensions/llm/fleet/worker_execution'
 require 'legion/extensions/llm/fleet/protocol'
 
-# Load BedrockCallable directly — it has no actor-runtime dependency.
+# Production callable and production discovery actor. The actor file loads via
+# the spec_helper actor-runtime stand-ins (the LegionIO platform is not a gem
+# dependency); the harness delegates identity derivation, draft building, and
+# safe readiness to the PRODUCTION actor code paths instead of duplicating
+# them (a duplicated builder would drift from the actor silently).
 require 'legion/extensions/llm/bedrock/callable'
-
-# Test-local callable that extends BedrockCallable with dispatch operations
-# required by FleetWorkerExecution. Tracks inference call count for
-# conformance assertions.
-class TrackingBedrockCallable < Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable
-  attr_reader :call_count
-
-  def initialize(instance_cfg:, logger:)
-    super
-    @call_count = 0
-  end
-
-  def chat(messages:, model:, **)
-    @call_count += 1
-    { role: 'assistant', content: 'test response', model: model, input_count: messages.size }
-  end
-
-  def stream_chat(messages:, model:, **)
-    @call_count += 1
-    { role: 'assistant', content: 'streamed response', model: model, input_count: messages.size }
-  end
-
-  def embed(text:, model:, **)
-    @call_count += 1
-    { embedding: [0.1, 0.2, 0.3], model: model, input_length: text.to_s.length }
-  end
-
-  def count_tokens(messages:, model:, **)
-    @call_count += 1
-    { token_count: messages.size * 10, model: model }
-  end
-end
-
-# Evidence-building helpers for the SSOT v3 conformance harness.
-module BedrockSsotEvidenceHelpers
-  private
-
-  def build_operation_evidence(now:, is_embedding:)
-    if is_embedding
-      {
-        chat: op_evidence(:chat, :unsupported, now),
-        stream_chat: op_evidence(:stream_chat, :unsupported, now),
-        embed: op_evidence(:embed, :supported, now),
-        image: op_evidence(:image, :unsupported, now),
-        transcribe: op_evidence(:transcribe, :unsupported, now),
-        translate: op_evidence(:translate, :unsupported, now),
-        speak: op_evidence(:speak, :unsupported, now),
-        moderate: op_evidence(:moderate, :unsupported, now),
-        count_tokens: op_evidence(:count_tokens, :unsupported, now)
-      }
-    else
-      {
-        chat: op_evidence(:chat, :supported, now),
-        stream_chat: op_evidence(:stream_chat, :supported, now),
-        embed: op_evidence(:embed, :unsupported, now),
-        image: op_evidence(:image, :unsupported, now),
-        transcribe: op_evidence(:transcribe, :unsupported, now),
-        translate: op_evidence(:translate, :unsupported, now),
-        speak: op_evidence(:speak, :unsupported, now),
-        moderate: op_evidence(:moderate, :unsupported, now),
-        count_tokens: op_evidence(:count_tokens, :unknown, now)
-      }
-    end
-  end
-
-  def op_evidence(operation, status, observed_at)
-    source = if status == :unknown
-               :default_false
-             elsif status == :supported
-               :provider_catalog
-             else
-               :provider_implementation
-             end
-    Legion::Extensions::Llm::Inventory::OperationEvidence.new(
-      operation: operation, status: status, source: source, observed_at: observed_at
-    )
-  end
-
-  def build_capability_evidence
-    {
-      completion: Legion::Extensions::Llm::Inventory::CapabilityEvidence.new(
-        capability: :completion, status: :supported, source: :provider_catalog, observed_at: Time.now
-      ),
-      streaming: Legion::Extensions::Llm::Inventory::CapabilityEvidence.new(
-        capability: :streaming, status: :supported, source: :provider_catalog, observed_at: Time.now
-      ),
-      tools: Legion::Extensions::Llm::Inventory::CapabilityEvidence.new(
-        capability: :tools, status: :supported, source: :provider_implementation, observed_at: Time.now
-      ),
-      thinking: Legion::Extensions::Llm::Inventory::CapabilityEvidence.new(
-        capability: :thinking, status: :supported, source: :provider_catalog, observed_at: Time.now
-      )
-    }
-  end
-end
+require 'legion/extensions/llm/bedrock/actors/discovery_refresh'
 
 # Harness class for Bedrock SSOT v3 conformance testing.
 class BedrockSsotHarness
-  include BedrockSsotEvidenceHelpers
-
+  # bedrock_stub_responses keeps the production callable's and the actor's
+  # AWS SDK clients fully offline: the exact fleet dispatch test drives a real
+  # BedrockCallable -> Bedrock::Provider -> stubbed Converse round-trip, and
+  # safe_readiness drives the actor's real check_health against stubs.
   INSTANCE_CONFIGS = [
     {
       bedrock_region: 'us-east-1',
       bedrock_access_key_id: 'AKIAIOSFODNN7EXAMPLE1',
       bedrock_secret_access_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1',
-      tier: :cloud
+      tier: :cloud,
+      bedrock_stub_responses: true
     }.freeze,
     {
       bedrock_region: 'eu-west-1',
       bearer_token: 'test-bearer-token-alpha',
-      tier: :cloud
+      tier: :cloud,
+      bedrock_stub_responses: true
     }.freeze
   ].freeze
+
+  MODEL_ID = 'anthropic.claude-sonnet-4-20250514-v1:0'
 
   def provider_family = :bedrock
   def instance_configs = INSTANCE_CONFIGS
 
+  # The production actor — instantiated via the spec_helper Every stand-in
+  # (no timer). Its private builders are the single source of draft/evidence
+  # construction; the harness only supplies test data (the model summary).
+  def ssot_actor
+    @ssot_actor ||= Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh.new
+  end
+
+  # Delegate to the production identity derivation — one source, no drift.
   def instance_id(instance_config:)
-    region = instance_config[:bedrock_region] || 'us-east-1'
-    bearer = instance_config[:bearer_token]
-    akid = instance_config[:bedrock_access_key_id]
-    profile = instance_config[:bedrock_profile]
-
-    fingerprint = if bearer.is_a?(String) && !bearer.strip.empty?
-                    "bearer:#{::Digest::SHA256.hexdigest(bearer)[0, 8]}"
-                  elsif akid.is_a?(String) && !akid.strip.empty?
-                    "ak:#{::Digest::SHA256.hexdigest(akid)[0, 8]}"
-                  elsif profile.is_a?(String) && !profile.strip.empty?
-                    "profile:#{profile}"
-                  else
-                    'default-chain'
-                  end
-
-    "#{region}/#{fingerprint}"
+    Legion::Extensions::Llm::Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_config)
   end
 
+  # The PRODUCTION callable — it implements the fleet dispatch operations by
+  # delegating to a per-instance Bedrock::Provider.
   def build_callable(instance_config:)
-    TrackingBedrockCallable.new(instance_cfg: instance_config, logger: Logger.new(File::NULL))
+    Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable.new(
+      instance_cfg: instance_config, logger: Logger.new(File::NULL)
+    )
   end
 
-  def build_offering_drafts(tier: :cloud, **)
-    now = Time.now.freeze
-    model_id = 'anthropic.claude-sonnet-4-20250514-v1:0'
-    [build_single_offering(model_id: model_id, tier: tier, now: now)]
+  # Production draft path: the actor's own build_offering_draft (operation
+  # evidence, capability evidence, context window, quota domains, metadata).
+  # (The kit also passes callable: — accepted and ignored; the production
+  # draft path does not consult it.)
+  def build_offering_drafts(tier: :cloud, instance_config: nil, **)
+    config = (instance_config || instance_configs.first).merge(tier: tier)
+    [ssot_actor.send(:build_offering_draft,
+                     model_id: MODEL_ID, summary: model_summary,
+                     instance_cfg: config, instance_key: instance_key_for(config))]
   end
 
+  # Production readiness path: the actor's own check_health (a stubbed
+  # ListFoundationModels control-plane call — safe in any environment).
   def safe_readiness(instance_config:, **)
-    region = instance_config[:bedrock_region] || 'us-east-1'
-    # Use stub_responses: true to exercise the real list_foundation_models code path
-    # without issuing actual AWS API calls (safe in any environment).
-    client = Aws::Bedrock::Client.new(region: region, stub_responses: true)
-    client.list_foundation_models
-    Legion::Extensions::Llm::Inventory::ReadinessResult.new(
-      ready: true,
-      reason: 'Bedrock ListFoundationModels succeeded',
-      metadata: { region: region }
-    )
-  rescue StandardError => e
-    Legion::Extensions::Llm::Inventory::ReadinessResult.new(
-      ready: false,
-      reason: "Bedrock health check failed: #{e.message}",
-      metadata: { region: region, error: e.class.name }
-    )
+    ssot_actor.send(:check_health, instance_cfg: instance_config)
   end
 
   def inference_call_count(callable:)
-    callable.respond_to?(:call_count) ? callable.call_count : 0
+    callable.dispatch_count
   end
 
   def normalize_dispatch_error(error:)
@@ -223,23 +128,16 @@ class BedrockSsotHarness
     error.define_singleton_method(:http_status_code) { status }
   end
 
-  def build_single_offering(model_id:, tier:, now:)
-    Legion::Extensions::Llm::Inventory::OfferingDraft.new(
-      provider_native_key: model_id, model: model_id, tier: tier,
-      operation_evidence: build_operation_evidence(now: now, is_embedding: false),
-      capability_evidence: build_capability_evidence,
-      context_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(
-        status: :known, value: 200_000, source: :provider_catalog
-      ),
-      max_output_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent),
-      embedding_dimensions_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(
-        status: :unknown, source: :absent
-      ),
-      model_revision_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(
-        status: :unknown, source: :absent
-      ),
-      tokenizer_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent),
-      quota_domains: {}, metadata: { raw_model: model_id }, publication_source: :provider_catalog
+  # Test data only: a ListFoundationModels-style model summary fed to the
+  # PRODUCTION build_offering_draft. The evidence/draft construction itself is
+  # the actor's, not the harness's.
+  def model_summary
+    { input_modalities: %w[text], output_modalities: %w[text], response_streaming_supported: true }
+  end
+
+  def instance_key_for(config)
+    Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+      provider_family: provider_family, instance_id: instance_id(instance_config: config)
     )
   end
 end
@@ -252,7 +150,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   it_behaves_like 'an SSOT v3 provider adapter'
 
-  # ─── Bedrock-specific identity derivation ──────────────────────────────────
+  # ─── Bedrock-specific identity derivation (production code) ───────────────
 
   describe 'instance identity derivation' do
     it 'derives instance_id as region/ak:fingerprint with access key' do
@@ -272,9 +170,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       expect(ssot_harness.instance_id(instance_config: config)).to eq('us-west-2/profile:production')
     end
 
-    it 'derives instance_id as region/default-chain without credentials' do
+    it 'derives NO identity for a credential-less config (no provider-family fallback)' do
       config = { bedrock_region: 'ap-southeast-1' }
-      expect(ssot_harness.instance_id(instance_config: config)).to eq('ap-southeast-1/default-chain')
+      expect(ssot_harness.instance_id(instance_config: config)).to be_nil
     end
 
     it 'produces distinct instance IDs for two different credential/region combos' do
@@ -612,22 +510,20 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end
 
     it 'offering drafts require an explicit model string' do
-      now = Time.now.freeze
+      good = ssot_harness.build_offering_drafts(
+        instance_config: ssot_harness.instance_configs.first
+      ).first
       expect do
         Legion::Extensions::Llm::Inventory::OfferingDraft.new(
           provider_native_key: 'test',
           model: '',
           tier: :cloud,
-          operation_evidence: ssot_harness.send(:build_operation_evidence, now: now, is_embedding: false),
-          context_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent),
-          max_output_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent),
-          embedding_dimensions_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(
-            status: :unknown, source: :absent
-          ),
-          model_revision_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(
-            status: :unknown, source: :absent
-          ),
-          tokenizer_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent),
+          operation_evidence: good.operation_evidence,
+          context_evidence: good.context_evidence,
+          max_output_evidence: good.max_output_evidence,
+          embedding_dimensions_evidence: good.embedding_dimensions_evidence,
+          model_revision_evidence: good.model_revision_evidence,
+          tokenizer_evidence: good.tokenizer_evidence,
           quota_domains: {},
           metadata: {},
           publication_source: :provider_catalog
@@ -655,6 +551,13 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       expect(callable).to respond_to(:normalize_dispatch_error)
     end
 
+    it 'implements the fleet dispatch operations' do
+      expect(callable).to respond_to(:chat)
+      expect(callable).to respond_to(:stream_chat)
+      expect(callable).to respond_to(:embed)
+      expect(callable).to respond_to(:count_tokens)
+    end
+
     it 'is not disconnected on creation' do
       expect(callable.disconnected?).to be(false)
     end
@@ -676,6 +579,29 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       error = RuntimeError.new(long_message)
       outcome = callable.normalize_dispatch_error(error: error)
       expect(outcome.reason.length).to be <= 1024
+    end
+  end
+
+  # ─── Raw-string model dispatch (D15) ──────────────────────────────────────
+  # The fleet WorkerExecution and legion-llm SelectionDispatch both pass
+  # model: as a RAW STRING (the offering's model id). Bedrock's render path
+  # normalizes through Capabilities#model_id (string-safe), so no
+  # Model::Info wrap is needed — pin that contract here so a future render
+  # path that calls model.id on a raw string fails loudly in CI.
+
+  describe 'raw-string model dispatch (D15)' do
+    let(:callable) { ssot_harness.build_callable(instance_config: ssot_harness.instance_configs.first) }
+    let(:raw_model) { 'us.anthropic.claude-sonnet-4-6' }
+
+    it 'dispatches chat with a raw string model' do
+      result = callable.chat(messages: [], model: raw_model)
+      expect(result).to be_a(Legion::Extensions::Llm::Message)
+      expect(callable.dispatch_count).to eq(1)
+    end
+
+    it 'dispatches count_tokens with a raw string model' do
+      result = callable.count_tokens(messages: [], model: raw_model)
+      expect(result).to be_a(Hash)
     end
   end
 

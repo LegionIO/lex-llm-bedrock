@@ -3,11 +3,12 @@
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/bedrock/thinking_modes'
 require 'legion/extensions/llm/bedrock/credential_discovery'
+require 'legion/extensions/llm/bedrock/instance_identity'
 require 'legion/extensions/llm/bedrock/provider'
 require 'legion/extensions/llm/bedrock/translator'
 require 'legion/extensions/llm/bedrock/version'
 require 'legion/logging/helper'
-require_relative 'bedrock/actors/discovery_refresh'
+require 'legion/extensions/llm/bedrock/actors/discovery_refresh'
 
 module Legion
   module Extensions
@@ -53,10 +54,7 @@ module Legion
               }
             }
           )
-          base.merge(
-            discovery_interval: 3600,
-            security: { block_static_aws_credentials: false }
-          )
+          base.merge(security: { block_static_aws_credentials: false })
         end
 
         def self.provider_class

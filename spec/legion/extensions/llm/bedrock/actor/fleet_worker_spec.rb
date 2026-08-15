@@ -24,9 +24,30 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::FleetWorker do
   end
 
   it 'uses the provider-owned fleet runner' do
-    expect(actor.runner_class).to eq('Legion::Extensions::Llm::Bedrock::Runners::FleetWorker')
+    # The Subscription dispatch path sends the decoded message to the runner
+    # class directly (runner_class.send(runner_function, **message)), so
+    # runner_class must be the runner constant, not a String.
+    expect(actor.runner_class).to eq(Legion::Extensions::Llm::Bedrock::Runners::FleetWorker)
     expect(actor.runner_function).to eq('handle_fleet_request')
     expect(actor.use_runner?).to be(false)
+  end
+
+  it 'dispatches a decoded message exactly the way the Subscription path does' do
+    message = {
+      request_id: 'req-1', provider: 'bedrock', provider_instance: 'us-east-1/ak:01234567',
+      operation: 'chat', model: 'us.anthropic.claude-sonnet-4-6', params: { messages: [] },
+      routing_key: 'llm.fleet.runners.fleet_worker.#', message_id: 'm-1'
+    }
+    allow(Legion::Extensions::Llm::Fleet::ProviderResponder).to receive(:call).and_return(:ok)
+
+    # The exact invocation form from Legion::Extensions::Actors::Subscription:
+    #   runner_class.send(fn, **message)
+    result = actor.runner_class.send(actor.runner_function, **message)
+
+    expect(result).to eq(:ok)
+    expect(Legion::Extensions::Llm::Fleet::ProviderResponder).to have_received(:call).with(
+      hash_including(payload: message, provider_family: :bedrock)
+    )
   end
 
   it 'is enabled only when at least one provider instance responds to fleet requests' do

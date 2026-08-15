@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 require 'digest'
-require_relative '../callable'
+require 'time'
+require 'legion/extensions/llm/bedrock/callable'
 
 begin
   require 'legion/extensions/actors/every'
@@ -16,6 +17,7 @@ require 'legion/extensions/llm/inventory/identity'
 require 'legion/extensions/llm/inventory/records'
 require 'legion/extensions/llm/inventory/evidence'
 require 'legion/extensions/llm/inventory/probe_coordinator'
+require 'legion/extensions/llm/inventory/scoped_refresher'
 require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
 
@@ -189,7 +191,13 @@ module Legion
                 build_offering_draft(model_id: model_id, summary: summary,
                                      instance_cfg: instance_cfg, instance_key: instance_key)
               end
+            rescue NameError, NoMethodError, ArgumentError
+              # Programming errors must fail loud — swallowing them here would
+              # publish zero offerings for every instance (invisible).
+              raise
             rescue StandardError => e
+              # Network/runtime failures of the control-plane call yield no
+              # offerings for this tick; the next tick retries.
               handle_exception(e, level: :warn, operation: 'bedrock.actor.discover_offerings')
               []
             end
@@ -254,7 +262,7 @@ module Legion
             end
 
             def build_quota_domains(instance_cfg:, model_id:)
-              region = resolve_region(instance_cfg: instance_cfg)
+              region = Legion::Extensions::Llm::Bedrock::InstanceIdentity.resolve_region(instance_cfg: instance_cfg)
               fingerprint = derive_account_fingerprint(instance_cfg: instance_cfg)
               return {} unless fingerprint
 
@@ -286,8 +294,14 @@ module Legion
               Legion::Extensions::Llm::Inventory::ReadinessResult.new(
                 ready: true,
                 reason: 'Bedrock ListFoundationModels succeeded',
-                metadata: { region: resolve_region(instance_cfg: instance_cfg) }
+                metadata: {
+                  region: Legion::Extensions::Llm::Bedrock::InstanceIdentity.resolve_region(instance_cfg: instance_cfg)
+                }
               )
+            rescue NameError, NoMethodError, ArgumentError
+              # Programming errors must fail loud — a swallowed one would leave
+              # the instance stuck in :initializing with no actionable signal.
+              raise
             rescue Aws::Bedrock::Errors::ServiceError => e
               readiness_failure(reason: "Bedrock ListFoundationModels failed: #{e.message}", error: e)
             rescue StandardError => e
@@ -306,9 +320,12 @@ module Legion
             end
 
             def client_options_for(instance_cfg:)
-              opts = { region: resolve_region(instance_cfg: instance_cfg) }
+              opts = {
+                region: Legion::Extensions::Llm::Bedrock::InstanceIdentity.resolve_region(instance_cfg: instance_cfg)
+              }
               endpoint = instance_cfg[:bedrock_endpoint]
               opts[:endpoint] = endpoint if endpoint
+              opts[:stub_responses] = true if instance_cfg[:bedrock_stub_responses] == true
               bearer = instance_cfg[:bearer_token]
               if bearer.is_a?(String) && !bearer.strip.empty?
                 opts[:token_provider] = Aws::StaticTokenProvider.new(bearer)
@@ -330,59 +347,6 @@ module Legion
             end
           end
 
-          # Instance identity and configuration helpers for DiscoveryRefresh.
-          module DiscoveryConfigHelpers
-            private
-
-            def derive_instance_id(instance_cfg:)
-              region = resolve_region(instance_cfg: instance_cfg)
-              cred = derive_credential_fingerprint(instance_cfg: instance_cfg)
-              "#{region}/#{cred}"
-            end
-
-            def derive_credential_fingerprint(instance_cfg:)
-              bearer  = instance_cfg[:bearer_token]
-              akid    = instance_cfg[:bedrock_access_key_id]
-              profile = instance_cfg[:bedrock_profile]
-
-              if bearer.is_a?(String) && !bearer.strip.empty?
-                "bearer:#{::Digest::SHA256.hexdigest(bearer)[0, 8]}"
-              elsif akid.is_a?(String) && !akid.strip.empty?
-                "ak:#{::Digest::SHA256.hexdigest(akid)[0, 8]}"
-              elsif profile.is_a?(String) && !profile.strip.empty?
-                "profile:#{profile}"
-              else
-                'default-chain'
-              end
-            end
-
-            def resolve_region(instance_cfg:)
-              instance_cfg[:bedrock_region] || instance_cfg[:region] || 'us-east-1'
-            end
-
-            def configured_instances
-              cfg_instances = settings[:instances]
-              return {} unless cfg_instances.is_a?(Hash)
-
-              cfg_instances.to_h do |name, config|
-                [name.to_sym, normalize_instance_config(config: config)]
-              end
-            end
-
-            def normalize_instance_config(config:)
-              normalized = config.to_h.transform_keys(&:to_sym)
-              normalized[:bedrock_region]            ||= normalized.delete(:region)
-              normalized[:bedrock_geo_prefix]        ||= normalized.delete(:geo_prefix)
-              normalized[:bedrock_endpoint]          ||= normalized.delete(:endpoint)
-              normalized[:bedrock_access_key_id]     ||= normalized.delete(:access_key_id)
-              normalized[:bedrock_secret_access_key] ||= normalized.delete(:secret_access_key)
-              normalized[:bedrock_session_token]     ||= normalized.delete(:session_token)
-              normalized[:bedrock_profile]           ||= normalized.delete(:profile)
-              normalized[:tier] ||= :cloud
-              normalized
-            end
-          end
-
           # Probe lifecycle helpers for DiscoveryRefresh.
           module DiscoveryProbeHelpers
             private
@@ -396,7 +360,8 @@ module Legion
               )
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe
-              report_probe_result(instance_id: instance_id, probe_token: probe_token, readiness: readiness)
+              report_probe_result(instance_id: instance_id, state: state,
+                                  probe_token: probe_token, readiness: readiness)
             rescue StandardError => e
               begin
                 coordinator&.finish_probe
@@ -419,7 +384,8 @@ module Legion
               )
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe(request: request)
-              report_probe_result(instance_id: instance_id, probe_token: probe_token, readiness: readiness)
+              report_probe_result(instance_id: instance_id, state: state,
+                                  probe_token: probe_token, readiness: readiness)
             rescue StandardError => e
               begin
                 coordinator&.finish_probe(request: request)
@@ -430,12 +396,15 @@ module Legion
               handle_exception(e, level: :warn, operation: 'bedrock.actor.reactive_probe', instance_id: instance_id)
             end
 
-            def report_probe_result(instance_id:, probe_token:, readiness:)
+            def report_probe_result(instance_id:, state:, probe_token:, readiness:)
               if readiness.ready?
                 publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token)
+                state[:last_probe_outcome] = :success
               else
                 publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token, reason: readiness.reason)
+                state[:last_probe_outcome] = :failure
               end
+              write_instance_health(name: state[:name], state: state, reason: readiness.reason)
             end
 
             def build_probe_enqueue(instance_id:)
@@ -449,12 +418,46 @@ module Legion
             end
           end
 
-          # Instance orchestration helpers: claim, refresh, shutdown.
+          # Instance orchestration helpers: discovery source, claim, recovery,
+          # tick reconciliation, shutdown, and the post-commit settings health
+          # + capabilities display writes (D14).
           module DiscoveryOrchestrationHelpers
             private
 
+            # SSOT instance source, shared with the fleet worker/runner: every
+            # resolvable-credential candidate from Bedrock.discover_instances
+            # (settings, env, claude, sigv4, broker), minus disabled and
+            # credential-less entries. Credential-less configs (including the
+            # synthetic instances.default) are never claimed — there is no
+            # fallback identity to claim under.
+            def claimable_instances
+              Bedrock.discover_instances.each_with_object({}) do |(name, instance_cfg), claimable|
+                if instance_cfg[:enabled] == false
+                  log.debug { "[bedrock][actor] instance=#{name} skipped: enabled=false" }
+                  next
+                end
+
+                unless credential_present?(instance_cfg)
+                  log.warn(
+                    "[bedrock][actor] instance=#{name} skipped: no resolvable credential " \
+                    '(credential-less instances are never claimed — there is no fallback identity)'
+                  )
+                  next
+                end
+
+                claimable[name] = instance_cfg
+              end
+            end
+
+            def credential_present?(instance_cfg)
+              [instance_cfg[:bearer_token], instance_cfg[:bedrock_access_key_id],
+               instance_cfg[:bedrock_profile]].any? do |value|
+                value.is_a?(::String) && !value.strip.empty?
+              end
+            end
+
             def claim_and_activate_instance(name:, instance_cfg:)
-              instance_id = derive_instance_id(instance_cfg: instance_cfg)
+              instance_id = Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_cfg)
               instance_key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
                 provider_family: :bedrock, instance_id: instance_id
               )
@@ -471,46 +474,212 @@ module Legion
                                                               publisher_token: publisher_token)
               readiness = check_health(instance_cfg: instance_cfg)
 
+              state = {
+                name: name, instance_key: instance_key, instance_cfg: instance_cfg,
+                callable: callable, probe_coordinator: probe_coordinator,
+                publisher_token: publisher_token, sequence: 0, offerings: offerings,
+                last_probe_outcome: nil
+              }
+              @instance_states[instance_id] = state
+
               if readiness.ready?
                 publisher.activate_instance_snapshot(
                   instance_id: instance_id, publisher_token: publisher_token,
-                  offerings: offerings, sequence: 0, probe_token: probe_token
+                  offerings: offerings, sequence: state[:sequence], probe_token: probe_token
                 )
+                state[:last_probe_outcome] = :success
               else
                 publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token, reason: readiness.reason)
+                state[:last_probe_outcome] = :failure
               end
-
-              @instance_states[instance_id] = {
-                name: name, instance_key: instance_key, instance_cfg: instance_cfg,
-                callable: callable, probe_coordinator: probe_coordinator,
-                publisher_token: publisher_token, sequence: 0, offerings: offerings
-              }
+              write_instance_health(name: name, state: state, reason: readiness.reason)
             end
 
+            def tick_refresh
+              claimable = claimable_instances
+              reconcile_removed_instances(claimable)
+
+              claimable.each do |name, instance_cfg|
+                instance_id = Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_cfg)
+                state = @instance_states[instance_id]
+                if state.nil?
+                  claim_and_activate_instance(name: name, instance_cfg: instance_cfg)
+                elsif state[:instance_cfg] != instance_cfg
+                  # Config changed under a live instance: re-claim with the new
+                  # identity/config rather than mutating a live publication.
+                  remove_instance_state(instance_id: instance_id)
+                  claim_and_activate_instance(name: name, instance_cfg: instance_cfg)
+                else
+                  refresh_instance(instance_id: instance_id, state: state)
+                end
+              rescue StandardError => e
+                handle_exception(e, level: :warn, operation: 'bedrock.actor.tick_refresh', instance_name: name.to_s)
+              end
+            end
+
+            def reconcile_removed_instances(claimable)
+              claimed_ids = claimable.values.filter_map do |instance_cfg|
+                Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_cfg)
+              end
+              @instance_states.each_key do |instance_id|
+                next if claimed_ids.include?(instance_id)
+
+                remove_instance_state(instance_id: instance_id)
+              end
+            end
+
+            # D4: an instance stuck in :initializing after an initial readiness
+            # failure is re-probed each tick and re-activated (fresh offerings +
+            # activate_instance_snapshot) the first time a probe passes.
             def refresh_instance(instance_id:, state:)
+              if publication_initializing?(state)
+                reactivate_if_ready(instance_id: instance_id, state: state)
+              else
+                replace_offerings_if_changed(instance_id: instance_id, state: state)
+                run_cadence_probe(instance_id: instance_id, state: state)
+              end
+            end
+
+            def publication_initializing?(state)
+              publisher.snapshot.publication_status(instance_key: state[:instance_key]).state == :initializing
+            end
+
+            def reactivate_if_ready(instance_id:, state:)
+              probe_token = publisher.readiness_probe_started(
+                instance_id: instance_id, publisher_token: state[:publisher_token]
+              )
+              readiness = check_health(instance_cfg: state[:instance_cfg])
+              if readiness.ready?
+                offerings = discover_offerings_for_instance(
+                  instance_cfg: state[:instance_cfg], instance_key: state[:instance_key]
+                )
+                state[:offerings] = offerings
+                publisher.activate_instance_snapshot(
+                  instance_id: instance_id, publisher_token: state[:publisher_token],
+                  offerings: offerings, sequence: state[:sequence], probe_token: probe_token
+                )
+                state[:last_probe_outcome] = :success
+              else
+                publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token, reason: readiness.reason)
+                state[:last_probe_outcome] = :failure
+              end
+              write_instance_health(name: state[:name], state: state, reason: readiness.reason)
+            end
+
+            def replace_offerings_if_changed(instance_id:, state:)
               new_offerings = discover_offerings_for_instance(
                 instance_cfg: state[:instance_cfg], instance_key: state[:instance_key]
               )
-              if new_offerings != state[:offerings]
-                state[:sequence] += 1
-                publisher.replace_instance_snapshot(
-                  instance_id: instance_id, publisher_token: state[:publisher_token],
-                  offerings: new_offerings, sequence: state[:sequence]
-                )
-                state[:offerings] = new_offerings
+              # Compare on identity/status, not Data#==: evidence carries a
+              # fresh observed_at per discovery and would force a replace
+              # (generation bump) every tick on an unchanged catalog.
+              return if offerings_signature(new_offerings) == offerings_signature(state[:offerings])
+
+              state[:sequence] += 1
+              publisher.replace_instance_snapshot(
+                instance_id: instance_id, publisher_token: state[:publisher_token],
+                offerings: new_offerings, sequence: state[:sequence]
+              )
+              state[:offerings] = new_offerings
+              write_instance_health(name: state[:name], state: state, reason: 'offerings refreshed')
+            end
+
+            def offerings_signature(offerings)
+              signatures = offerings.map do |draft|
+                {
+                  model: draft.model,
+                  tier: draft.tier,
+                  operations: draft.operation_evidence.transform_values(&:status).sort.to_h,
+                  capabilities: draft.capability_evidence.transform_values(&:status).sort.to_h
+                }
               end
-              run_cadence_probe(instance_id: instance_id, state: state)
+              signatures.sort_by { |entry| entry[:model].to_s }
+            end
+
+            def remove_instance_state(instance_id:)
+              state = @instance_states.delete(instance_id)
+              return unless state
+
+              publisher.remove_instance(instance_id: instance_id, publisher_token: state[:publisher_token])
+              clear_instance_health(name: state[:name])
+            rescue StandardError => e
+              handle_exception(e, level: :warn, operation: 'bedrock.actor.remove_instance', instance_id: instance_id)
             end
 
             def remove_all_instances
               return unless @instance_states
 
-              @instance_states.each do |instance_id, state|
-                publisher.remove_instance(instance_id: instance_id, publisher_token: state[:publisher_token])
-              rescue StandardError => e
-                handle_exception(e, level: :warn, operation: 'bedrock.actor.remove_instance', instance_id: instance_id)
+              @instance_states.each_key do |instance_id|
+                remove_instance_state(instance_id: instance_id)
               end
-              @instance_states.clear
+            end
+
+            # ── D14: settings health + capabilities display writes ────────────
+            #
+            # Display-only, written AFTER each registry commit; the in-memory
+            # AvailabilityFact remains the routing authority. The key is the
+            # config name (settings key), not the derived instance id.
+
+            def write_instance_health(name:, state:, reason:)
+              entry = settings_instance_entry(name)
+              entry[:health] = instance_health_hash(state: state, reason: reason)
+              entry[:capabilities] = instance_capabilities(state[:offerings])
+            end
+
+            def clear_instance_health(name:)
+              entry = settings_instance_entry(name)
+              entry.delete(:health)
+              entry.delete(:capabilities)
+            end
+
+            def settings_instance_entry(name)
+              instances = settings[:instances]
+              instances = settings[:instances] = {} unless instances.is_a?(::Hash)
+              entry = instances[name]
+              entry = instances[name] = {} unless entry.is_a?(::Hash)
+              entry
+            end
+
+            def instance_health_hash(state:, reason:)
+              availability = instance_availability_state(instance_key: state[:instance_key])
+              {
+                circuit_state: health_circuit_state(availability),
+                denied: false,
+                available: availability == :available,
+                adjustment: health_adjustment(availability),
+                reason: reason,
+                observed_at: ::Time.now.utc.iso8601,
+                last_probe_outcome: state[:last_probe_outcome],
+                source: 'bedrock_ssot_actor'
+              }.compact
+            end
+
+            def instance_availability_state(instance_key:)
+              record = publisher.snapshot.instance(instance_key: instance_key)
+              record.nil? ? :initializing : record.availability.state
+            end
+
+            def health_circuit_state(availability)
+              case availability
+              when :available   then :closed
+              when :unavailable then :open
+              else :half_open
+              end
+            end
+
+            def health_adjustment(availability)
+              case availability
+              when :available    then 0
+              when :initializing then -25
+              else -50
+              end
+            end
+
+            def instance_capabilities(offerings)
+              supported = offerings.flat_map do |draft|
+                draft.capability_evidence.select { |_capability, evidence| evidence.supported? }.keys
+              end
+              supported.uniq.sort
             end
           end
 
@@ -519,7 +688,9 @@ module Legion
           # via ListFoundationModels, probes health via the same non-inference
           # control-plane call, and publishes complete OfferingDraft snapshots
           # through Inventory::Publisher. Supports coalesced reactive probes
-          # after dispatch-triggered instance_unavailable transitions.
+          # after dispatch-triggered instance_unavailable transitions,
+          # re-activation of instances stuck in :initializing after a transient
+          # startup failure, and per-tick reconciliation of the instance set.
           class DiscoveryRefresh < Legion::Extensions::Actors::Every
             include Legion::Extensions::Helpers::Lex
             include Legion::Logging::Helper
@@ -527,11 +698,14 @@ module Legion
             include DiscoveryCapabilityEvidenceHelpers
             include DiscoveryModelHelpers
             include DiscoveryHealthHelpers
-            include DiscoveryConfigHelpers
             include DiscoveryProbeHelpers
             include DiscoveryOrchestrationHelpers
 
-            def self.every_seconds = 3600
+            # Mirrors the registered lex-llm default
+            # (discovery.interval_seconds); used only when the settings tree
+            # has no discovery section. time must never return nil — a
+            # TimerTask with a nil interval fires exactly once and stops.
+            DEFAULT_DISCOVERY_INTERVAL_SECONDS = 300
 
             def runner_class    = self.class
             def runner_function = 'manual'
@@ -541,7 +715,8 @@ module Legion
             def generate_task?  = false
 
             def time
-              settings[:discovery_interval]
+              interval = settings.dig(:discovery, :interval_seconds)
+              interval.is_a?(Integer) && interval.positive? ? interval : DEFAULT_DISCOVERY_INTERVAL_SECONDS
             end
 
             def manual
@@ -564,23 +739,20 @@ module Legion
             private
 
             def publisher
-              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
+              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(
+                provider_family: :bedrock,
+                compatibility_adapter: Legion::Extensions::Llm::Inventory::ScopedRefresher::LegacyCoordinatorAdapter.new(
+                  provider_family: :bedrock
+                )
+              )
             end
 
             def initial_discovery
               @instance_states = {}
-              configured_instances.each do |name, instance_cfg|
+              claimable_instances.each do |name, instance_cfg|
                 claim_and_activate_instance(name: name, instance_cfg: instance_cfg)
               rescue StandardError => e
                 handle_exception(e, level: :warn, operation: 'bedrock.actor.claim_instance', instance_name: name.to_s)
-              end
-            end
-
-            def tick_refresh
-              @instance_states.each do |instance_id, state|
-                refresh_instance(instance_id: instance_id, state: state)
-              rescue StandardError => e
-                handle_exception(e, level: :warn, operation: 'bedrock.actor.refresh_instance', instance_id: instance_id)
               end
             end
           end

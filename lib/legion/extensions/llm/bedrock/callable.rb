@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+require 'aws-sdk-bedrock'
+require 'aws-sdk-bedrockruntime'
+require 'legion/extensions/llm/error'
+require 'legion/extensions/llm/inventory/errors'
 require 'legion/extensions/llm/routing/provider_outcome'
 
 module Legion
@@ -7,23 +11,65 @@ module Legion
     module Llm
       module Bedrock
         module Actor
-          # Callable wrapper for a Bedrock provider instance. Implements the
-          # `disconnect` and `normalize_dispatch_error(error:)` contracts
+          # Per-instance dispatch callable for a Bedrock provider instance.
+          #
+          # Wraps a per-instance Bedrock::Provider built from the instance
+          # config and implements the fleet dispatch operations the coordinator
+          # invokes (chat, stream_chat, embed, count_tokens) with ** passthrough,
+          # plus the disconnect / normalize_dispatch_error(error:) contracts
           # required by Inventory::CallableHandle and Routing::ProviderOutcome.
+          # Provider and AWS SDK errors propagate unchanged so
+          # normalize_dispatch_error can classify them.
           class BedrockCallable
             def initialize(instance_cfg:, logger:)
               @instance_cfg = instance_cfg
               @logger = logger
+              @provider = nil
               @disconnected = false
+              @dispatch_mutex = Mutex.new
+              @dispatch_count = 0
             end
 
             def disconnected?
               @disconnected
             end
 
+            def dispatch_count
+              @dispatch_mutex.synchronize { @dispatch_count }
+            end
+
             def disconnect
               @disconnected = true
+              @provider&.disconnect
+              @provider = nil
               @logger.debug { '[bedrock][callable] disconnected' }
+            end
+
+            def chat(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
+                     thinking: nil, params: {}, **opts)
+              dispatch! do
+                provider.chat(messages: messages, model: model, temperature: temperature, max_tokens: max_tokens,
+                              tools: tools, tool_prefs: tool_prefs, thinking: thinking, params: params.merge(opts))
+              end
+            end
+
+            def stream_chat(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
+                            thinking: nil, params: {}, **opts, &)
+              dispatch! do
+                provider.stream(messages: messages, model: model, temperature: temperature, max_tokens: max_tokens,
+                                tools: tools, tool_prefs: tool_prefs, thinking: thinking,
+                                params: params.merge(opts), &)
+              end
+            end
+
+            def embed(text:, model:, dimensions: nil, params: {}, **opts)
+              dispatch! { provider.embed(text: text, model: model, dimensions: dimensions, params: params.merge(opts)) }
+            end
+
+            def count_tokens(messages:, model:, system: nil, params: {}, **opts)
+              dispatch! do
+                provider.count_tokens(messages: messages, model: model, system: system, params: params.merge(opts))
+              end
             end
 
             def normalize_dispatch_error(error:)
@@ -38,6 +84,22 @@ module Legion
             end
 
             private
+
+            # Per-instance Provider, built lazily from the instance config on
+            # first dispatch.
+            def provider
+              @provider ||= Legion::Extensions::Llm::Bedrock::Provider.new(@instance_cfg)
+            end
+
+            def dispatch!
+              if disconnected?
+                raise Legion::Extensions::Llm::Inventory::Errors::CallableDisposedError,
+                      'bedrock callable is disconnected'
+              end
+
+              @dispatch_mutex.synchronize { @dispatch_count += 1 }
+              yield
+            end
 
             def classify_error(error:)
               case error
@@ -97,8 +159,6 @@ module Legion
 
             def overloaded_error?(error:)
               error.is_a?(Legion::Extensions::Llm::OverloadedError)
-            rescue NameError
-              false
             end
 
             def timeout_error?(error:)

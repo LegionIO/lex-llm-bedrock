@@ -53,9 +53,9 @@ module Legion
             end
 
             def static_credentials_blocked?
-              ::Legion::Settings[:extensions][:llm][:security][:block_static_aws_credentials] == true
-            rescue NoMethodError, TypeError
-              false
+              # Registered at extensions.llm.bedrock.security by
+              # Bedrock.default_settings; default is false (not blocked).
+              ::Legion::Settings.dig(:extensions, :llm, :bedrock, :security, :block_static_aws_credentials) == true
             end
 
             def credential_source

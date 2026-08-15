@@ -133,6 +133,7 @@ module Legion
             return {} if config.nil?
 
             normalized = config.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
+            flatten_credential_subhash!(normalized)
             normalized[:bedrock_region]            ||= normalized.delete(:region)
             normalized[:bedrock_geo_prefix]        ||= normalized.delete(:geo_prefix)
             normalized[:bedrock_endpoint]          ||= normalized.delete(:endpoint)
@@ -144,6 +145,20 @@ module Legion
             normalized[:bedrock_session_token]     ||= normalized.delete(:session_token)
             normalized[:bedrock_profile]           ||= normalized.delete(:profile)
             normalized.compact.except(:instances)
+          end
+
+          # Flatten the documented credentials: sub-hash into the flat
+          # provider config keys. Explicit flat keys win over sub-hash values.
+          def flatten_credential_subhash!(normalized)
+            creds = normalized.delete(:credentials)
+            return unless creds.is_a?(::Hash)
+
+            creds = creds.transform_keys(&:to_sym)
+            normalized[:bearer_token]              ||= creds[:bearer_token]
+            normalized[:bedrock_access_key_id]     ||= creds[:access_key_id]
+            normalized[:bedrock_secret_access_key] ||= creds[:secret_access_key]
+            normalized[:bedrock_session_token]     ||= creds[:session_token]
+            normalized[:bedrock_profile]           ||= creds[:profile]
           end
 
           def dedup_config(config)

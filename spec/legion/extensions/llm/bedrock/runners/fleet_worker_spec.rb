@@ -4,14 +4,18 @@ require 'spec_helper'
 require 'legion/extensions/llm/fleet/provider_responder'
 require 'legion/extensions/llm/bedrock/runners/fleet_worker'
 
-FleetWorkerSpecDelivery = Class.new unless defined?(FleetWorkerSpecDelivery)
-FleetWorkerSpecProperties = Class.new unless defined?(FleetWorkerSpecProperties)
-
 RSpec.describe Legion::Extensions::Llm::Bedrock::Runners::FleetWorker do
-  let(:payload) { { request_id: 'req-1', provider: 'bedrock', provider_instance: 'local' } }
-  let(:delivery) { instance_double(FleetWorkerSpecDelivery) }
-  let(:properties) { instance_double(FleetWorkerSpecProperties) }
-  let(:instances) { { local: { fleet: { respond_to_requests: true } } } }
+  let(:message) do
+    {
+      request_id: 'req-1', correlation_id: 'corr-1', idempotency_key: 'idem-1',
+      operation: 'chat', provider: 'bedrock', provider_instance: 'us-east-1/ak:01234567',
+      model: 'us.anthropic.claude-sonnet-4-6', params: { messages: [] },
+      reply_to: 'legion.fleet.replies', message_context: {}, caller: 'test',
+      trace_context: {}, signed_token: 'tok', timeout_seconds: 60,
+      expires_at: '2026-01-01T00:01:00Z', protocol_version: 2
+    }
+  end
+  let(:instances) { { 'us-east-1/ak:01234567' => { fleet: { respond_to_requests: true } } } }
 
   it 'uses the shared logging helper' do
     expect(described_class.singleton_class.ancestors).to include(Legion::Logging::Helper)
@@ -21,16 +25,14 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Runners::FleetWorker do
     allow(Legion::Extensions::Llm::Bedrock).to receive(:discover_instances).and_return(instances)
     allow(Legion::Extensions::Llm::Fleet::ProviderResponder).to receive(:call).and_return(:ok)
 
-    result = described_class.handle_fleet_request(payload, delivery:, properties:)
+    result = described_class.handle_fleet_request(**message)
 
     expect(result).to eq(:ok)
     expect(Legion::Extensions::Llm::Fleet::ProviderResponder).to have_received(:call).with(
-      payload: payload,
+      payload: message,
       provider_family: :bedrock,
       provider_class: Legion::Extensions::Llm::Bedrock::Provider,
-      provider_instances: satisfy { |resolver| resolver.call == instances },
-      delivery: delivery,
-      properties: properties
+      provider_instances: satisfy { |resolver| resolver.call == instances }
     )
   end
 end

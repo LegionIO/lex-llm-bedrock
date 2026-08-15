@@ -18,8 +18,11 @@ module Legion
               tool_prefs: nil,
               params: {},
               thinking: nil,
-              **_provider_options
+              **opts
             )
+              # Passthrough request params that do not map to an explicit
+              # keyword reach the Converse payload, never silently dropped.
+              params = params.merge(opts)
               enforce_model_allowed!(model_id(model))
               log.info { "bedrock.provider.chat: model=#{model_id(model)} messages=#{messages.size}" }
 
@@ -42,7 +45,10 @@ module Legion
             end
 
             def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
-                       thinking: nil, **_provider_options, &)
+                       thinking: nil, **opts, &)
+              # Passthrough request params that do not map to an explicit
+              # keyword reach the Converse payload, never silently dropped.
+              params = params.merge(opts)
               enforce_model_allowed!(model_id(model))
               log.info do
                 "bedrock.provider.stream: model=#{model_id(model)} messages=#{messages.size} tools=#{tools.size}"
@@ -71,7 +77,10 @@ module Legion
               result
             end
 
-            def count_tokens(messages:, model:, system: nil, params: {})
+            def count_tokens(messages:, model:, system: nil, params: {}, **opts)
+              # Passthrough request params that do not map to an explicit
+              # keyword reach the CountTokens payload, never silently dropped.
+              params = params.merge(opts)
               log.debug { "bedrock.provider.count_tokens: model=#{model_id(model)}" }
               request = Utils.deep_merge(
                 {
@@ -86,7 +95,10 @@ module Legion
               { input_tokens: value(response, :input_tokens), raw: normalize_response(response) }
             end
 
-            def embed(text:, model:, dimensions: nil, params: {}, **_provider_options)
+            def embed(text:, model:, dimensions: nil, params: {}, **opts)
+              # Passthrough request params that do not map to an explicit
+              # keyword reach the InvokeModel body, never silently dropped.
+              params = params.merge(opts)
               mid = model_id(model)
               enforce_model_allowed!(mid)
               unless titan_embed?(mid)
@@ -105,8 +117,11 @@ module Legion
               parse_embedding_response(response, model: mid)
             end
 
-            def complete(messages, tools:, temperature:, model:, params: {}, _headers: {}, schema: nil,
-                         thinking: nil, tool_prefs: nil, &)
+            # The nameless ** accepts and ignores HTTP-style kwargs the base
+            # contract carries (headers:) — Bedrock transport is the AWS SDK,
+            # which owns its own request signing.
+            def complete(messages, tools:, temperature:, model:, params: {}, schema: nil,
+                         thinking: nil, tool_prefs: nil, **, &)
               payload = params.dup
               payload[:additional_model_request_fields] ||= {}
               payload[:additional_model_request_fields][:response_format] = schema if schema
