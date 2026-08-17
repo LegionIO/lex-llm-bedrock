@@ -280,7 +280,13 @@ module Legion
             end
 
             def build_offering_metadata(model_id:, instance_key:)
-              { raw_model: model_id, instance_id: instance_key.instance_id }
+              # instance_id is the config name (identity); physical_id is the
+              # secondary derived region/credential id (dedup/diagnostics).
+              {
+                raw_model: model_id,
+                instance_id: instance_key.instance_id,
+                physical_id: instance_key.physical_id
+              }
             end
           end
 
@@ -356,7 +362,8 @@ module Legion
               return unless coordinator.begin_probe
 
               probe_token = publisher.readiness_probe_started(
-                instance_id: instance_id, publisher_token: state[:publisher_token]
+                instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                publisher_token: state[:publisher_token]
               )
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe
@@ -380,7 +387,8 @@ module Legion
               return unless coordinator.begin_probe(request: request)
 
               probe_token = publisher.readiness_probe_started(
-                instance_id: instance_id, publisher_token: state[:publisher_token]
+                instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                publisher_token: state[:publisher_token]
               )
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe(request: request)
@@ -398,10 +406,15 @@ module Legion
 
             def report_probe_result(instance_id:, state:, probe_token:, readiness:)
               if readiness.ready?
-                publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token)
+                publisher.readiness_succeeded(
+                  instance_id: instance_id, physical_id: state[:instance_key].physical_id, probe_token: probe_token
+                )
                 state[:last_probe_outcome] = :success
               else
-                publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token, reason: readiness.reason)
+                publisher.readiness_failed(
+                  instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                  probe_token: probe_token, reason: readiness.reason
+                )
                 state[:last_probe_outcome] = :failure
               end
               write_instance_health(name: state[:name], state: state, reason: readiness.reason)
@@ -426,12 +439,23 @@ module Legion
 
             # SSOT instance source, shared with the fleet worker/runner: every
             # resolvable-credential candidate from Bedrock.discover_instances
-            # (settings, env, claude, sigv4, broker), minus disabled and
-            # credential-less entries. Credential-less configs (including the
-            # synthetic instances.default) are never claimed — there is no
-            # fallback identity to claim under.
+            # (settings, env, claude, sigv4, broker), minus disabled,
+            # credential-less, and reserved-name entries. Credential-less
+            # configs (including the synthetic instances.default) are never
+            # claimed — there is no fallback identity to claim under — and a
+            # config literally named 'default' is the reserved InstanceKey
+            # identity (the router keys instances.<name> by the operator's
+            # name; 'default' is not one).
             def claimable_instances
               Bedrock.discover_instances.each_with_object({}) do |(name, instance_cfg), claimable|
+                if name.to_s == 'default'
+                  log.warn(
+                    "[bedrock][actor] instance=#{name} skipped: 'default' is the reserved " \
+                    'InstanceKey identity — name the instance to claim it'
+                  )
+                  next
+                end
+
                 if instance_cfg[:enabled] == false
                   log.debug { "[bedrock][actor] instance=#{name} skipped: enabled=false" }
                   next
@@ -457,9 +481,13 @@ module Legion
             end
 
             def claim_and_activate_instance(name:, instance_cfg:)
-              instance_id = Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_cfg)
+              # Identity is the operator's CONFIG NAME (the key the router
+              # looks up in instances.<name>); the derived region/credential
+              # id is the secondary physical id (dedup/diagnostics only).
+              instance_id = name.to_s
+              physical_id = Bedrock::InstanceIdentity.derive_physical_id(instance_cfg: instance_cfg)
               instance_key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-                provider_family: :bedrock, instance_id: instance_id
+                provider_family: :bedrock, instance_id: instance_id, physical_id: physical_id
               )
               callable = BedrockCallable.new(instance_cfg: instance_cfg, logger: log)
               probe_coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
@@ -467,10 +495,11 @@ module Legion
                 enqueue: build_probe_enqueue(instance_id: instance_id)
               )
               publisher_token = publisher.claim_instance(
-                instance_id: instance_id, callable: callable, probe_request_handle: probe_coordinator
+                instance_id: instance_id, callable: callable, probe_request_handle: probe_coordinator,
+                physical_id: physical_id
               )
               offerings = discover_offerings_for_instance(instance_cfg: instance_cfg, instance_key: instance_key)
-              probe_token = publisher.readiness_probe_started(instance_id: instance_id,
+              probe_token = publisher.readiness_probe_started(instance_id: instance_id, physical_id: physical_id,
                                                               publisher_token: publisher_token)
               readiness = check_health(instance_cfg: instance_cfg)
 
@@ -484,12 +513,13 @@ module Legion
 
               if readiness.ready?
                 publisher.activate_instance_snapshot(
-                  instance_id: instance_id, publisher_token: publisher_token,
+                  instance_id: instance_id, physical_id: physical_id, publisher_token: publisher_token,
                   offerings: offerings, sequence: state[:sequence], probe_token: probe_token
                 )
                 state[:last_probe_outcome] = :success
               else
-                publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token, reason: readiness.reason)
+                publisher.readiness_failed(instance_id: instance_id, physical_id: physical_id,
+                                           probe_token: probe_token, reason: readiness.reason)
                 state[:last_probe_outcome] = :failure
               end
               write_instance_health(name: name, state: state, reason: readiness.reason)
@@ -500,7 +530,7 @@ module Legion
               reconcile_removed_instances(claimable)
 
               claimable.each do |name, instance_cfg|
-                instance_id = Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_cfg)
+                instance_id = name.to_s
                 state = @instance_states[instance_id]
                 if state.nil?
                   claim_and_activate_instance(name: name, instance_cfg: instance_cfg)
@@ -518,9 +548,7 @@ module Legion
             end
 
             def reconcile_removed_instances(claimable)
-              claimed_ids = claimable.values.filter_map do |instance_cfg|
-                Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_cfg)
-              end
+              claimed_ids = claimable.keys.map(&:to_s)
               @instance_states.each_key do |instance_id|
                 next if claimed_ids.include?(instance_id)
 
@@ -546,7 +574,8 @@ module Legion
 
             def reactivate_if_ready(instance_id:, state:)
               probe_token = publisher.readiness_probe_started(
-                instance_id: instance_id, publisher_token: state[:publisher_token]
+                instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                publisher_token: state[:publisher_token]
               )
               readiness = check_health(instance_cfg: state[:instance_cfg])
               if readiness.ready?
@@ -555,12 +584,16 @@ module Legion
                 )
                 state[:offerings] = offerings
                 publisher.activate_instance_snapshot(
-                  instance_id: instance_id, publisher_token: state[:publisher_token],
+                  instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                  publisher_token: state[:publisher_token],
                   offerings: offerings, sequence: state[:sequence], probe_token: probe_token
                 )
                 state[:last_probe_outcome] = :success
               else
-                publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token, reason: readiness.reason)
+                publisher.readiness_failed(
+                  instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                  probe_token: probe_token, reason: readiness.reason
+                )
                 state[:last_probe_outcome] = :failure
               end
               write_instance_health(name: state[:name], state: state, reason: readiness.reason)
@@ -577,7 +610,8 @@ module Legion
 
               state[:sequence] += 1
               publisher.replace_instance_snapshot(
-                instance_id: instance_id, publisher_token: state[:publisher_token],
+                instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                publisher_token: state[:publisher_token],
                 offerings: new_offerings, sequence: state[:sequence]
               )
               state[:offerings] = new_offerings
@@ -600,7 +634,11 @@ module Legion
               state = @instance_states.delete(instance_id)
               return unless state
 
-              publisher.remove_instance(instance_id: instance_id, publisher_token: state[:publisher_token])
+              publisher.remove_instance(
+                instance_id: state[:instance_key].instance_id,
+                physical_id: state[:instance_key].physical_id,
+                publisher_token: state[:publisher_token]
+              )
               clear_instance_health(name: state[:name])
             rescue StandardError => e
               handle_exception(e, level: :warn, operation: 'bedrock.actor.remove_instance', instance_id: instance_id)
@@ -684,7 +722,10 @@ module Legion
           end
 
           # SSOT v3 periodic discovery actor for Bedrock provider instances.
-          # Claims instances per credential/region identity, discovers models
+          # Claims instances under the operator's CONFIG NAME (the
+          # InstanceKey.instance_id the router keys settings lookups by),
+          # carries the derived region/credential id as the secondary
+          # InstanceKey.physical_id (dedup/diagnostics only), discovers models
           # via ListFoundationModels, probes health via the same non-inference
           # control-plane call, and publishes complete OfferingDraft snapshots
           # through Inventory::Publisher. Supports coalesced reactive probes

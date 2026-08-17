@@ -6,19 +6,26 @@ module Legion
   module Extensions
     module Llm
       module Bedrock
-        # Deterministic SSOT v3 identity derivation for Bedrock provider instances.
+        # Deterministic SSOT v3 physical-identity derivation for Bedrock
+        # provider instances.
         #
-        # Single source of truth shared by the discovery actor, the fleet
-        # responder, and the conformance harness. An instance is only claimable
-        # when it carries a resolvable credential; a credential-less config
-        # derives NO identity (nil) instead of a provider-family fallback.
+        # Instance IDENTIFICATION is the operator's CONFIG NAME
+        # (InstanceKey.instance_id). The value derived here is the SECONDARY
+        # physical id (InstanceKey.physical_id) — region + credential
+        # fingerprint — kept for dedup and diagnostics only. It never
+        # participates in identity, tuning lookups, or routing.
+        #
+        # Single source of truth shared by the discovery actor and the
+        # conformance harness. A config is only claimable when it carries a
+        # resolvable credential; a credential-less config derives NO physical
+        # id (nil) instead of a provider-family fallback.
         module InstanceIdentity
           module_function
 
           # Returns "region/<credential>" or nil when the config carries no
           # resolvable credential. The credential segment is never a
           # provider-family fallback identity.
-          def derive_instance_id(instance_cfg:)
+          def derive_physical_id(instance_cfg:)
             credential = derive_credential_fingerprint(instance_cfg: instance_cfg)
             return nil unless credential
 

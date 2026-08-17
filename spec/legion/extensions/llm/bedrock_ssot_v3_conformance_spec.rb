@@ -29,26 +29,30 @@ class BedrockSsotHarness
   # AWS SDK clients fully offline: the exact fleet dispatch test drives a real
   # BedrockCallable -> Bedrock::Provider -> stubbed Converse round-trip, and
   # safe_readiness drives the actor's real check_health against stubs.
-  INSTANCE_CONFIGS = [
-    {
+  #
+  # Instance identity is the operator's CONFIG NAME (the key the router looks
+  # up in instances.<name>); the derived region/credential id is the secondary
+  # physical id (dedup/diagnostics only).
+  NAMED_INSTANCE_CONFIGS = {
+    us_prod: {
       bedrock_region: 'us-east-1',
       bedrock_access_key_id: 'AKIAIOSFODNN7EXAMPLE1',
       bedrock_secret_access_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1',
       tier: :cloud,
       bedrock_stub_responses: true
     }.freeze,
-    {
+    eu_prod: {
       bedrock_region: 'eu-west-1',
       bearer_token: 'test-bearer-token-alpha',
       tier: :cloud,
       bedrock_stub_responses: true
     }.freeze
-  ].freeze
+  }.freeze
 
   MODEL_ID = 'anthropic.claude-sonnet-4-20250514-v1:0'
 
   def provider_family = :bedrock
-  def instance_configs = INSTANCE_CONFIGS
+  def instance_configs = NAMED_INSTANCE_CONFIGS.values
 
   # The production actor — instantiated via the spec_helper Every stand-in
   # (no timer). Its private builders are the single source of draft/evidence
@@ -57,9 +61,18 @@ class BedrockSsotHarness
     @ssot_actor ||= Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh.new
   end
 
-  # Delegate to the production identity derivation — one source, no drift.
+  # The operator's CONFIG NAME — the InstanceKey.instance_id the router keys
+  # settings lookups by. Matched on the config minus :tier because the draft
+  # path merges a (possibly overridden) tier into the config copy.
   def instance_id(instance_config:)
-    Legion::Extensions::Llm::Bedrock::InstanceIdentity.derive_instance_id(instance_cfg: instance_config)
+    base = instance_config.except(:tier)
+    NAMED_INSTANCE_CONFIGS.find { |_name, stored| stored.except(:tier) == base }&.first&.to_s
+  end
+
+  # Delegate to the production physical-id derivation — one source, no drift.
+  # The secondary InstanceKey.physical_id (dedup/diagnostics only).
+  def physical_id(instance_config:)
+    Legion::Extensions::Llm::Bedrock::InstanceIdentity.derive_physical_id(instance_cfg: instance_config)
   end
 
   # The PRODUCTION callable — it implements the fleet dispatch operations by
@@ -137,7 +150,9 @@ class BedrockSsotHarness
 
   def instance_key_for(config)
     Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-      provider_family: provider_family, instance_id: instance_id(instance_config: config)
+      provider_family: provider_family,
+      instance_id: instance_id(instance_config: config),
+      physical_id: physical_id(instance_config: config)
     )
   end
 end
@@ -150,41 +165,48 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   it_behaves_like 'an SSOT v3 provider adapter'
 
-  # ─── Bedrock-specific identity derivation (production code) ───────────────
+  # ─── Bedrock-specific physical-id derivation (production code) ────────────
+  # instance_id is the operator's CONFIG NAME (supplied by the harness); the
+  # derived region/credential id is the SECONDARY physical id only.
 
-  describe 'instance identity derivation' do
-    it 'derives instance_id as region/ak:fingerprint with access key' do
+  describe 'instance physical-id derivation' do
+    it 'derives physical_id as region/ak:fingerprint with access key' do
       config = { bedrock_region: 'us-east-1', bedrock_access_key_id: 'AKIAIOSFODNN7EXAMPLE1' }
       fingerprint = Digest::SHA256.hexdigest('AKIAIOSFODNN7EXAMPLE1')[0, 8]
-      expect(ssot_harness.instance_id(instance_config: config)).to eq("us-east-1/ak:#{fingerprint}")
+      expect(ssot_harness.physical_id(instance_config: config)).to eq("us-east-1/ak:#{fingerprint}")
     end
 
-    it 'derives instance_id as region/bearer:fingerprint with bearer token' do
+    it 'derives physical_id as region/bearer:fingerprint with bearer token' do
       config = { bedrock_region: 'eu-west-1', bearer_token: 'test-bearer-token-alpha' }
       fingerprint = Digest::SHA256.hexdigest('test-bearer-token-alpha')[0, 8]
-      expect(ssot_harness.instance_id(instance_config: config)).to eq("eu-west-1/bearer:#{fingerprint}")
+      expect(ssot_harness.physical_id(instance_config: config)).to eq("eu-west-1/bearer:#{fingerprint}")
     end
 
-    it 'derives instance_id as region/profile:name with profile' do
+    it 'derives physical_id as region/profile:name with profile' do
       config = { bedrock_region: 'us-west-2', bedrock_profile: 'production' }
-      expect(ssot_harness.instance_id(instance_config: config)).to eq('us-west-2/profile:production')
+      expect(ssot_harness.physical_id(instance_config: config)).to eq('us-west-2/profile:production')
     end
 
-    it 'derives NO identity for a credential-less config (no provider-family fallback)' do
+    it 'derives NO physical id for a credential-less config (no provider-family fallback)' do
       config = { bedrock_region: 'ap-southeast-1' }
-      expect(ssot_harness.instance_id(instance_config: config)).to be_nil
+      expect(ssot_harness.physical_id(instance_config: config)).to be_nil
     end
 
-    it 'produces distinct instance IDs for two different credential/region combos' do
-      ids = ssot_harness.instance_configs.map { |cfg| ssot_harness.instance_id(instance_config: cfg) }
-      expect(ids.uniq.size).to eq(2)
+    it 'publishes distinct config-name identities AND distinct physical ids for the two instances' do
+      names = ssot_harness.instance_configs.map { |cfg| ssot_harness.instance_id(instance_config: cfg) }
+      expect(names.uniq.size).to eq(2)
+      physicals = ssot_harness.instance_configs.map { |cfg| ssot_harness.physical_id(instance_config: cfg) }
+      expect(physicals.uniq.size).to eq(2)
     end
 
-    it 'reproduces the same instance_id across multiple calls (stable identity)' do
+    it 'reproduces the same name identity and physical id across multiple calls (stable identity)' do
       config = ssot_harness.instance_configs.first
-      id_a = ssot_harness.instance_id(instance_config: config)
-      id_b = ssot_harness.instance_id(instance_config: config)
-      expect(id_a).to eq(id_b)
+      name_a = ssot_harness.instance_id(instance_config: config)
+      name_b = ssot_harness.instance_id(instance_config: config)
+      expect(name_a).to eq(name_b)
+      physical_a = ssot_harness.physical_id(instance_config: config)
+      physical_b = ssot_harness.physical_id(instance_config: config)
+      expect(physical_a).to eq(physical_b)
     end
   end
 
@@ -194,19 +216,25 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     def bring_up_instance(config, tier: :cloud)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
       instance_id = ssot_harness.instance_id(instance_config: config)
+      physical_id = ssot_harness.physical_id(instance_config: config)
       key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :bedrock, instance_id: instance_id
+        provider_family: :bedrock, instance_id: instance_id, physical_id: physical_id
       )
       callable = ssot_harness.build_callable(instance_config: config)
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
 
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(
+        instance_id: instance_id, physical_id: physical_id, callable: callable, probe_request_handle: coordinator
+      )
+      probe = publisher.readiness_probe_started(
+        instance_id: instance_id, physical_id: physical_id, publisher_token: token
+      )
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: tier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, physical_id: physical_id, publisher_token: token,
+        offerings: drafts, sequence: 0, probe_token: probe
       )
 
       { publisher: publisher, key: key, callable: callable, token: token, drafts: drafts, coordinator: coordinator }
@@ -250,19 +278,25 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     def bring_up_with_tier(config, tier:)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
       instance_id = ssot_harness.instance_id(instance_config: config)
+      physical_id = ssot_harness.physical_id(instance_config: config)
       key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :bedrock, instance_id: instance_id
+        provider_family: :bedrock, instance_id: instance_id, physical_id: physical_id
       )
       callable = ssot_harness.build_callable(instance_config: config)
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
 
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(
+        instance_id: instance_id, physical_id: physical_id, callable: callable, probe_request_handle: coordinator
+      )
+      probe = publisher.readiness_probe_started(
+        instance_id: instance_id, physical_id: physical_id, publisher_token: token
+      )
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: tier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, physical_id: physical_id, publisher_token: token,
+        offerings: drafts, sequence: 0, probe_token: probe
       )
 
       { publisher: publisher, key: key, callable: callable, token: token, drafts: drafts }
@@ -280,6 +314,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       )
       context[:publisher].replace_instance_snapshot(
         instance_id: ssot_harness.instance_id(instance_config: config),
+        physical_id: ssot_harness.physical_id(instance_config: config),
         publisher_token: context[:token],
         offerings: frontier_drafts,
         sequence: 1
@@ -300,7 +335,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     let(:config) { ssot_harness.instance_configs[0] }
     let(:key) do
       Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :bedrock, instance_id: ssot_harness.instance_id(instance_config: config)
+        provider_family: :bedrock,
+        instance_id: ssot_harness.instance_id(instance_config: config),
+        physical_id: ssot_harness.physical_id(instance_config: config)
       )
     end
 
@@ -354,19 +391,25 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     def bring_up(config)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
       instance_id = ssot_harness.instance_id(instance_config: config)
+      physical_id = ssot_harness.physical_id(instance_config: config)
       key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :bedrock, instance_id: instance_id
+        provider_family: :bedrock, instance_id: instance_id, physical_id: physical_id
       )
       callable = ssot_harness.build_callable(instance_config: config)
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
 
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(
+        instance_id: instance_id, physical_id: physical_id, callable: callable, probe_request_handle: coordinator
+      )
+      probe = publisher.readiness_probe_started(
+        instance_id: instance_id, physical_id: physical_id, publisher_token: token
+      )
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :cloud)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, physical_id: physical_id, publisher_token: token,
+        offerings: drafts, sequence: 0, probe_token: probe
       )
 
       { publisher: publisher, key: key, callable: callable, token: token }
@@ -630,6 +673,13 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       end
     end
 
+    it 'records the config name as instance_id and the derived id as physical_id in metadata' do
+      draft = drafts.first
+      expect(draft.metadata[:instance_id]).to eq('us_prod')
+      physical = "us-east-1/ak:#{Digest::SHA256.hexdigest('AKIAIOSFODNN7EXAMPLE1')[0, 8]}"
+      expect(draft.metadata[:physical_id]).to eq(physical)
+    end
+
     it 'uses frozen metadata without secret keys' do
       drafts.each do |draft|
         expect(draft.metadata).to be_frozen
@@ -669,22 +719,28 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   describe 'stale/superseded readiness probe non-recovery' do
     def bring_up(config)
-      publisher  = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
-      iid        = ssot_harness.instance_id(instance_config: config)
-      key        = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :bedrock, instance_id: iid
+      publisher   = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :bedrock)
+      iid         = ssot_harness.instance_id(instance_config: config)
+      physical_id = ssot_harness.physical_id(instance_config: config)
+      key         = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+        provider_family: :bedrock, instance_id: iid, physical_id: physical_id
       )
-      callable   = ssot_harness.build_callable(instance_config: config)
-      coord      = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
+      callable    = ssot_harness.build_callable(instance_config: config)
+      coord       = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
-      token  = publisher.claim_instance(instance_id: iid, callable: callable, probe_request_handle: coord)
-      probe  = publisher.readiness_probe_started(instance_id: iid, publisher_token: token)
+      token = publisher.claim_instance(
+        instance_id: iid, physical_id: physical_id, callable: callable, probe_request_handle: coord
+      )
+      probe = publisher.readiness_probe_started(
+        instance_id: iid, physical_id: physical_id, publisher_token: token
+      )
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :cloud)
       publisher.activate_instance_snapshot(
-        instance_id: iid, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: iid, physical_id: physical_id, publisher_token: token,
+        offerings: drafts, sequence: 0, probe_token: probe
       )
-      { publisher: publisher, key: key, iid: iid, token: token, callable: callable }
+      { publisher: publisher, key: key, iid: iid, physical_id: physical_id, token: token, callable: callable }
     end
 
     let(:config) { ssot_harness.instance_configs[0] }
@@ -695,7 +751,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       # Capture a probe token started while the instance is active (the "stale" probe).
       # Its started_availability_revision is set to the current revision at this point.
       stale_probe = ctx[:publisher].readiness_probe_started(
-        instance_id: ctx[:iid], publisher_token: ctx[:token]
+        instance_id: ctx[:iid], physical_id: ctx[:physical_id], publisher_token: ctx[:token]
       )
 
       # Mark instance unavailable (bumps unavailable_revision above the probe's started_revision)
@@ -708,7 +764,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
       # The stale probe completes — but since started_revision < unavailable_revision,
       # the registry rejects recovery (returns reason: :stale_probe, does not transition to :available)
-      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], probe_token: stale_probe)
+      ctx[:publisher].readiness_succeeded(
+        instance_id: ctx[:iid], physical_id: ctx[:physical_id], probe_token: stale_probe
+      )
 
       failure_msg = 'stale probe must not recover an instance that became unavailable after the probe was issued'
       expect(registry.snapshot.instance(instance_key: ctx[:key]).availability.state).to eq(:unavailable), failure_msg
@@ -727,18 +785,18 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       # Both probe_a and probe_b are started after unavailable; either can recover the instance.
       # probe_b finishes first (it is "newer" in the recovery race).
       probe_a = ctx[:publisher].readiness_probe_started(
-        instance_id: ctx[:iid], publisher_token: ctx[:token]
+        instance_id: ctx[:iid], physical_id: ctx[:physical_id], publisher_token: ctx[:token]
       )
       probe_b = ctx[:publisher].readiness_probe_started(
-        instance_id: ctx[:iid], publisher_token: ctx[:token]
+        instance_id: ctx[:iid], physical_id: ctx[:physical_id], publisher_token: ctx[:token]
       )
 
       # probe_b recovers the instance
-      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], probe_token: probe_b)
+      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], physical_id: ctx[:physical_id], probe_token: probe_b)
       expect(registry.snapshot.instance(instance_key: ctx[:key]).availability.state).to eq(:available)
 
       # probe_a then also reports success — the registry must not corrupt or remove the instance
-      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], probe_token: probe_a)
+      ctx[:publisher].readiness_succeeded(instance_id: ctx[:iid], physical_id: ctx[:physical_id], probe_token: probe_a)
 
       failure_msg2 = 'superseded probe should not corrupt or remove an already-available instance'
       expect(registry.snapshot.instance(instance_key: ctx[:key])).not_to be_nil, failure_msg2

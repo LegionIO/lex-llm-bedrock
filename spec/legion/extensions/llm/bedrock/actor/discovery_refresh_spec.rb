@@ -14,9 +14,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     Legion::Extensions::Llm::Bedrock::InstanceIdentity
   end
 
-  def key_for(config)
+  # Name-based identity: instance_id is the operator's CONFIG NAME,
+  # physical_id is the secondary derived region/credential id.
+  def key_for(name, config)
     Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-      provider_family: :bedrock, instance_id: identity.derive_instance_id(instance_cfg: config)
+      provider_family: :bedrock, instance_id: name.to_s,
+      physical_id: identity.derive_physical_id(instance_cfg: config)
     )
   end
 
@@ -74,7 +77,22 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     end
 
     it 'derives nil (never a default-chain id) for the credential-less config' do
-      expect(identity.derive_instance_id(instance_cfg: { bedrock_region: 'ap-southeast-1' })).to be_nil
+      expect(identity.derive_physical_id(instance_cfg: { bedrock_region: 'ap-southeast-1' })).to be_nil
+    end
+  end
+
+  describe 'reserved name (default)' do
+    before do
+      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
+                                                    .and_return(instances: { default: east_config })
+    end
+
+    it 'never claims a config named default (the reserved InstanceKey identity)' do
+      actor = described_class.new
+      actor.manual
+
+      expect(registry.snapshot.each_publication_status.to_a).to be_empty
+      actor.shutdown
     end
   end
 
@@ -95,8 +113,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
       on_config = { region: 'us-east-1', bearer_token: 'tok-on' }
       off_config = { region: 'us-east-1', bearer_token: 'tok-off' }
       snapshot = registry.snapshot
-      expect(snapshot.instance(instance_key: key_for(on_config)).availability.state).to eq(:available)
-      expect(snapshot.publication_status(instance_key: key_for(off_config))).to be_nil
+      expect(snapshot.instance(instance_key: key_for(:on, on_config)).availability.state).to eq(:available)
+      expect(snapshot.publication_status(instance_key: key_for(:off, off_config))).to be_nil
       actor.shutdown
     end
   end
@@ -112,8 +130,19 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
       actor.manual
 
       snapshot = registry.snapshot
-      expect(snapshot.instance(instance_key: key_for(east_config)).availability.state).to eq(:available)
-      expect(snapshot.publication_status(instance_key: key_for(east_config)).state).to eq(:complete)
+      expect(snapshot.instance(instance_key: key_for(:east, east_config)).availability.state).to eq(:available)
+      expect(snapshot.publication_status(instance_key: key_for(:east, east_config)).state).to eq(:complete)
+      actor.shutdown
+    end
+
+    it 'publishes the config NAME as instance_id and the derived id as the secondary physical_id' do
+      actor = described_class.new
+      actor.manual
+
+      record = registry.snapshot.instance(instance_key: key_for(:east, east_config))
+      expect(record.instance_key.instance_id).to eq('east')
+      physical = "us-east-1/bearer:#{Digest::SHA256.hexdigest('tok-east')[0, 8]}"
+      expect(record.instance_key.physical_id).to eq(physical)
       actor.shutdown
     end
 
@@ -151,16 +180,16 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
       allow(actor).to receive(:build_bedrock_client).and_return(client)
 
       actor.manual
-      expect(registry.snapshot.publication_status(instance_key: key_for(unstubbed_east)).state)
+      expect(registry.snapshot.publication_status(instance_key: key_for(:east, unstubbed_east)).state)
         .to eq(:initializing)
-      expect(registry.snapshot.instance(instance_key: key_for(unstubbed_east))).to be_nil
+      expect(registry.snapshot.instance(instance_key: key_for(:east, unstubbed_east))).to be_nil
       expect(health_for(:east)[:circuit_state]).to eq(:half_open)
       expect(health_for(:east)[:last_probe_outcome]).to eq(:failure)
 
       state[:healthy] = true
       actor.manual
 
-      expect(registry.snapshot.instance(instance_key: key_for(unstubbed_east)).availability.state)
+      expect(registry.snapshot.instance(instance_key: key_for(:east, unstubbed_east)).availability.state)
         .to eq(:available)
       expect(health_for(:east)[:circuit_state]).to eq(:closed)
       expect(health_for(:east)[:available]).to be(true)
@@ -177,14 +206,14 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
 
       actor = described_class.new
       actor.manual
-      expect(registry.snapshot.publication_status(instance_key: key_for(west_config))).to be_nil
+      expect(registry.snapshot.publication_status(instance_key: key_for(:west, west_config))).to be_nil
 
       allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
                                                     .and_return(instances: { east: east_config, west: west_config })
       settings_root[:llm] = { bedrock: { instances: { east: east_config, west: west_config } } }
       actor.manual
 
-      expect(registry.snapshot.instance(instance_key: key_for(west_config)).availability.state).to eq(:available)
+      expect(registry.snapshot.instance(instance_key: key_for(:west, west_config)).availability.state).to eq(:available)
       actor.shutdown
     end
 
@@ -195,14 +224,14 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
 
       actor = described_class.new
       actor.manual
-      expect(registry.snapshot.instance(instance_key: key_for(west_config))).not_to be_nil
+      expect(registry.snapshot.instance(instance_key: key_for(:west, west_config))).not_to be_nil
 
       allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
                                                     .and_return(instances: { east: east_config })
       settings_root[:llm] = { bedrock: { instances: { east: east_config } } }
       actor.manual
 
-      expect(registry.snapshot.publication_status(instance_key: key_for(west_config))).to be_nil
+      expect(registry.snapshot.publication_status(instance_key: key_for(:west, west_config))).to be_nil
       expect(health_for(:west)).to be_nil
       actor.shutdown
     end
