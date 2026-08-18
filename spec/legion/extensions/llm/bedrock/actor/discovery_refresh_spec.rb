@@ -111,6 +111,24 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
       actor.shutdown
     end
 
+    it 'warns exactly once per actor lifetime when the unmodified "default" template is skipped' do
+      allow(Legion::Extensions::Llm::Bedrock).to receive(:discover_instances).and_return(
+        default: template_candidate
+      )
+      warnings = []
+      fake_log = Object.new
+      fake_log.define_singleton_method(:warn) { |message = nil, **| warnings << message.to_s }
+
+      actor = described_class.new
+      allow(actor).to receive(:log).and_return(fake_log)
+      expect(actor.send(:claimable_instances)).to be_empty
+      expect(actor.send(:claimable_instances)).to be_empty
+
+      expect(warnings.size).to eq(1), 'the template skip must be loud but not per-tick spam'
+      expect(warnings.first).to include('unmodified synthetic default')
+      actor.shutdown
+    end
+
     it 'keeps a configured default (real credentials) in the claimable set' do
       allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock).and_return(
         instances: {
