@@ -448,11 +448,6 @@ module Legion
             # instance label and is claimable (v2 parity).
             def claimable_instances
               Bedrock.discover_instances.each_with_object({}) do |(name, instance_cfg), claimable|
-                if unconfigured_default?(name: name, instance_cfg: instance_cfg)
-                  warn_unconfigured_default
-                  next
-                end
-
                 if instance_cfg[:enabled] == false
                   log.debug { "[bedrock][actor] instance=#{name} skipped: enabled=false" }
                   next
@@ -488,21 +483,6 @@ module Legion
 
               instance_cfg.except(:source, :credential_fingerprint, :capabilities) ==
                 unmodified_default_template
-            end
-
-            # Warns once per actor lifetime so the skip is loud without
-            # spamming every discovery tick: a provider with no claimed
-            # instance is the NORMAL state, so a per-tick WARN is permanent
-            # log noise, not a warning.
-            def warn_unconfigured_default
-              return if @unconfigured_default_warned
-
-              @unconfigured_default_warned = true
-              log.warn(
-                '[bedrock][actor] instance=default skipped: unmodified synthetic default ' \
-                'template (no operator credentials — configure a real credential under ' \
-                'instances.default or rename the instance to claim it)'
-              )
             end
 
             # The nested template in the same normalized form

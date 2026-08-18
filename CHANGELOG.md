@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.4] - 2026-08-18
+
+### Fixed
+- **Synthetic default is claimable** — Removed the discovery skip branch and once-per-boot warning for the synthetic `instances.default` configuration; normal credential validation now decides whether it can be activated.
+
 ## [Unreleased]
 
 ### Changed
