@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.5.4] - 2026-08-18
+
+### Fixed
+- **Synthetic default is claimable** — Removed the discovery skip branch and once-per-boot warning for the synthetic `instances.default` configuration; normal credential validation now decides whether it can be activated.
+
+## [Unreleased]
+
+### Changed
+- **Config-name instance identity (fail-forward)** — the discovery actor now claims instances under the operator's CONFIG NAME (`InstanceKey.instance_id`, the key the router looks up in `instances.<name>`); the derived `region/<credential>` id becomes the SECONDARY `InstanceKey.physical_id` (dedup/diagnostics only — it never participates in identity, tuning, or routing). `InstanceIdentity.derive_instance_id` is renamed `derive_physical_id`; every `Publisher` call carries `physical_id:`; the state map and tick reconciliation are keyed by the config name; a config literally named `default` (the reserved `InstanceKey` identity) is skipped with a loud warn instead of an every-tick `ValidationError`. Offering metadata records `instance_id` (name) + `physical_id` (derived). Conformance harness + actor/actor-lifecycle specs assert the name-based identity with the secondary physical id. Embedding models already publish `chat: :unsupported` (authoritative operation evidence — unchanged). The gemspec floor rises to `lex-llm >= 0.7.1` (the `physical_id` InstanceKey contract is 0.7.1-only).
+
+### Fixed
+- **Synthetic-default skip warn fires once per boot** — the unmodified `instances.default` template skip WARN now fires exactly once per actor lifetime (a provider with no claimed instance is the normal state; a per-tick WARN was permanent log noise). The operator signal — "default is still the unmodified template; set real credentials to publish it" — is preserved at first occurrence.
+- **Single actor registration** — the provider module no longer extends Core at file level, so the boot-time submodule walk skips it (its `autobuild` gate) and the gem's own top-level extension load is the sole actor registration (eliminates the double-claim / `FencedPublisherError`).
+- **Real fleet dispatch (D1)** — `BedrockCallable` now implements `chat` / `stream_chat` / `embed` / `count_tokens` with `**` passthrough, delegating to a per-instance `Bedrock::Provider` built from the instance config; provider/AWS errors propagate unchanged for `normalize_dispatch_error`. `disconnect` closes the wrapped provider; dispatching a disconnected callable raises. Conformance harness now uses the PRODUCTION callable (the `TrackingBedrockCallable` stub is gone) and the exact fleet dispatch test drives a real `callable -> Provider -> stubbed Converse` round-trip.
+- **No fallback identity (D3)** — credential-less instance configs (including the synthetic `instances.default`) are never claimed; `Bedrock::InstanceIdentity.derive_instance_id` returns `nil` instead of a `default-chain` id. The `credentials:` sub-hash is flattened in `normalize_instance_config`, and `enabled: false` instances are skipped. The conformance spec no longer asserts the forbidden `ap-southeast-1/default-chain` identity.
+- **Initial-failure recovery (D4)** — an instance stuck in `:initializing` after a failed startup probe is re-probed each tick and re-activated (fresh offerings + `activate_instance_snapshot`) on the first passing probe. Ticks also reconcile the instance set: instances configured after boot are claimed, instances whose configuration disappeared (or changed) are removed/re-claimed. Offering comparison is on identity/status, not `Data#==`, so an unchanged catalog no longer forces a replace every tick.
+- **Mixed-version bridge (D2)** — the actor's `Inventory::Publisher` injects `LegacyCoordinatorAdapter` so SSOT publications are projected to the old coordinator store during the mixed-version window.
+- **Single discovery universe (P2-3)** — the actor and the fleet worker/runner both source instances from `Bedrock.discover_instances` (settings + env + claude + sigv4 + broker, deduped), so an env-credentialed node publishes SSOT lanes and can answer fleet requests.
+- **Security setting path (P2-2)** — `security.block_static_aws_credentials` is read at its registered path (`extensions.llm.bedrock.security`) via explicit `dig`; the silent `rescue NoMethodError, TypeError` is gone.
+- **Fleet Subscription dispatch (D13)** — `Actor::FleetWorker#runner_class` returns the runner constant (a String cannot be `send`-ed by the Subscription path) and `Runners::FleetWorker#handle_fleet_request(**message)` accepts the decoded message exactly as the framework invokes it.
+- **Provider dispatch surface** — `chat` / `stream` / `embed` / `count_tokens` merge `**opts` passthrough params into the API payload instead of silently dropping them; `complete` accepts the base contract's `headers:` via accept-and-ignore `**` (it was `_headers:`, an `ArgumentError` on the inherited `stream_chat` path).
+- **Discovery cadence (D9)** — the actor `time` reads the registered `discovery.interval_seconds` (never nil; falls back to the registered default) and the dead `self.every_seconds` is removed. The shadow top-level `discovery_interval` default is dropped in favor of the single standard knob.
+- **Health display (D14)** — after every registry commit (initial readiness, recovery activation, replace, probe, removal) the actor writes `settings[:instances][<config_name>][:health]` (legacy 4-key shape + display keys) and `[:capabilities]`; removal clears them. Routing authority remains the in-memory availability state.
+- **Standards sweep** — `require` instead of `require_relative` across lib; the hard-dep `NameError` guard in `BedrockCallable#overloaded_error?` and the silent settings rescue in `ClientHelpers` are removed; `**_provider_options` / `_headers:` kwargs replaced per the kwarg signature rule.
+- **Conformance kit load** — spec_helper requires the kit's `conformance.rb` + `ssot_provider_examples.rb` instead of globbing the whole directory, which was executing lex-llm's own self-test specs inside this gem's suite. New actor lifecycle spec covers claimability, `enabled: false`, D4 recovery, tick reconciliation, shutdown, D14 health shape, and D9 cadence.
+- **Raw-string model (D15)** — verified: bedrock's render path normalizes the model through `Capabilities#model_id` (string-safe: `model.respond_to?(:id) ? model.id.to_s : model.to_s`) at every dispatch op (chat/stream/count_tokens/embed/invoke-model paths), so no `Model::Info` wrap is needed at the callable boundary. Pinned by new conformance tests driving the production callable with a raw string model. (Note: offline `stub_responses` clients cannot exercise `converse_stream`/`invoke_model` — an upstream aws-sdk-core stubbing limitation, verified against the raw SDK; the model-handling path is the same `model_id` chokepoint.)
+- **Discovery fail-loud (D16)** — `discover_offerings_for_instance` and `check_health` re-raise `NameError`/`NoMethodError`/`ArgumentError` instead of converting them into "no offerings"/"readiness failed" (which would leave every instance invisibly empty); only network/runtime errors yield `[]`/a failed probe. The conformance harness now delegates draft-building and safe-readiness to the PRODUCTION actor methods (`build_offering_draft`, `check_health`) — the duplicated harness evidence builders are deleted. No class constant is referenced from an included helper module (`DEFAULT_DISCOVERY_INTERVAL_SECONDS` is class-local to `time`; `CONTEXT_WINDOWS` lives in its own module).
+- **Stale lock (D10)** — `Gemfile.lock` regenerated against `lex-llm >= 0.7.0` (was pinned to 0.6.9, which cannot load the SSOT inventory layer).
+
+## [0.5.2] - 2026-08-13
+
+### Fixed
+- **Genuine rubocop compliance** — Removed every `# rubocop:disable` inline directive and all `.rubocop.yml` weakening. Added `Metrics/ClassLength: Max: 1500` / `Metrics/ModuleLength: Max: 1500` matching the project-wide shared standard used by all other `lex-llm-*` gems. Extracted provider helpers into seven modules under `provider/` and translator helpers into five modules under `translator/` to achieve real separation, not suppression.
+- **Superclass mismatch** — `provider/constants.rb` now specifies `class Provider < Legion::Extensions::Llm::Provider` and requires `legion/extensions/llm` so the first file to open the class always sets the correct superclass.
+- **`resolve_model_id` kwargs** — Changed `_config: nil` (wrong name) to `**` so the method correctly absorbs the `config:` keyword that `lex-llm` passes via `provider_resolved_model_id`.
+- **`known_non_thinking?` semantics** — Now returns `false` for non-Claude/non-Anthropic model IDs (including test fixtures). Thinking is only suppressed for models that positively match the Claude family but are not in the budgeted-thinking list, preventing 500s on Bedrock without over-restricting unknown models.
+- **Secondary publication engine removed** — `publish_readiness_async` and `publish_models_async` calls removed from provider instance methods (§2/§5). Corresponding test expectations removed from `bedrock_spec.rb`.
+- **Stale/superseded probe tests** — Rewrote conformance spec stale and superseded probe tests to use the correct `readiness_succeeded` probe lifecycle rather than `activate_instance_snapshot` (which requires `:initializing` state). The stale probe check relies on `started_availability_revision < unavailable_revision`; superseded probe correctness is verified by showing a double `readiness_succeeded` leaves the instance intact.
+- **Spec path alignment** — Moved `provider/capability_policy_spec.rb` and `provider/thinking_capability_spec.rb` to `bedrock/provider_*_spec.rb` to satisfy `RSpec/SpecFilePathFormat`. Renamed `thinking_payload_spec.rb` to `provider_thinking_payload_spec.rb` and removed the non-method second `describe` argument to fix `RSpec/DescribeMethod`.
+
+## [0.5.1] - 2026-08-13
+
+### Fixed
+- **SSOT v3 compliance sweep** — Removed all `# rubocop:disable` directives from source and specs. Replaced swallowed `rescue nil` in probe cleanup with `handle_exception` logging. Removed `|| default` settings guards by registering `discovery_interval:` in `default_settings`. Removed `:default` instance_id fallbacks from `offering_for` and `build_offering`. Split `DiscoveryRefresh` into six focused private modules to satisfy `Metrics/ClassLength` and `Metrics/ModuleLength` without inline disables.
+- **Health firewall** — `connection_failure` / timeout / overload / generic-5xx remain request-local; only `Aws::BedrockRuntime::Errors::ServiceUnavailableException` maps to `:instance_unavailable`. Conformance harness mapping corrected.
+
+## [0.5.0] - 2026-08-13
+
+### Changed
+- **SSOT v3 provider migration** — Discovery actor completely rewritten to use `Inventory::Publisher`, `ProbeCoordinator`, and `BedrockCallable`. Each credential/region pair publishes as an exact instance with full operation evidence per model. No default model, no Legion::LLM reverse dependency.
+- **Dependency floor** — `lex-llm >= 0.7.0` (Inventory v3 API).
+- **Removed** `DEFAULT_MODEL` constant, `resolve_default_model`, and default model injection from `discover_instances`. SSOT v3 forbids provider-level model defaults — the router selects models from published offerings.
+
+### Added
+- **BedrockCallable** — Implements `disconnect` and `normalize_dispatch_error` with full AWS error classification. Only `Aws::BedrockRuntime::Errors::ServiceUnavailableException` maps to `:instance_unavailable`; all other 5xx/transient errors map to `:overloaded`.
+- **Conformance spec** — `it_behaves_like 'an SSOT v3 provider adapter'` plus Bedrock-specific identity derivation, error classification, and isolation tests.
+
 ## [0.4.10] - 2026-08-04
 
 ### Fixed

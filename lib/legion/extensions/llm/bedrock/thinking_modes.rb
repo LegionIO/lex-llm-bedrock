@@ -56,6 +56,9 @@ module Legion
           def known_non_thinking?(model_id)
             return false if model_id.nil? || model_id.to_s.strip.empty?
 
+            mid = model_id.to_s
+            return false unless mid.include?('anthropic') || mid.include?('claude')
+
             !budgeted_thinking?(model_id)
           end
         end

@@ -6,7 +6,7 @@ require 'spec_helper'
 # capability so the router's thinking filter can protect them. The truth lives in
 # the shared lex-llm catalog (models.json, `reasoning` -> :thinking); bedrock
 # discovery must surface it via CapabilityPolicy's :provider_catalog source.
-RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do # rubocop:disable RSpec/SpecFilePathFormat
+RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
   let(:credential_sources) { Legion::Extensions::Llm::CredentialSources }
   let(:base_config) do
     {

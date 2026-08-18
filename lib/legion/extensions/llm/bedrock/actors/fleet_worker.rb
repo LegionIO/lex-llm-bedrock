@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm/bedrock'
+require 'legion/extensions/llm/bedrock/runners/fleet_worker'
 
 begin
   require 'legion/extensions/actors/subscription'
@@ -25,11 +26,18 @@ module Legion
       module Bedrock
         module Actor
           # Subscription actor for Bedrock fleet request consumption.
+          #
+          # The Subscription dispatch path invokes the runner directly as
+          # `runner_class.send(runner_function, **message)` where `message` is
+          # the fully decoded delivery (envelope fields plus metadata headers).
+          # runner_class must therefore be the runner constant itself (a String
+          # cannot be `send`-ed) and the runner function must accept the
+          # decoded message as keyword arguments.
           class FleetWorker < Legion::Extensions::Actors::Subscription
             include Legion::Logging::Helper
 
             def runner_class
-              'Legion::Extensions::Llm::Bedrock::Runners::FleetWorker'
+              Legion::Extensions::Llm::Bedrock::Runners::FleetWorker
             end
 
             def runner_function

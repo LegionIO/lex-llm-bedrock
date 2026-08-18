@@ -2,23 +2,60 @@
 
 require 'bundler/setup'
 require 'legion/extensions/llm'
+
+# The LegionIO actor runtime (Every/Subscription actor bases, the Lex settings
+# helper) is the host platform, not a dependency of this gem. When it is not
+# on the load path, provide minimal stand-ins so the production actor files
+# load unchanged. Specs that exercise actor logic drive `manual`/`shutdown`
+# directly — the stand-in Every starts no timer.
 begin
   require 'legion/extensions/helpers/lex'
 rescue LoadError
-  # lex helper not available in isolated test environment
+  # The module is host-platform; in isolated gem tests mix in the real
+  # legion-settings Helper so `settings` exercises the genuine 1.4.2
+  # nested-path resolution ([:extensions][:llm][:bedrock]).
+  module Legion
+    module Extensions
+      module Helpers
+        module Lex
+          include ::Legion::Settings::Helper
+        end
+      end
+    end
+  end
+end
+
+begin
+  require 'legion/extensions/actors/every'
+rescue LoadError
+  module Legion
+    module Extensions
+      module Actors
+        class Every
+          def initialize(**) = nil
+        end
+      end
+    end
+  end
 end
 
 Legion::Logging.setup(level: 'fatal', log_file: File::NULL, log_stdout: false, async: false, color: false)
 
 require 'legion/extensions/llm/bedrock'
 
-# Load conformance kit from lex-llm spec/ directory (shipped in gem, not on load path).
-# Consumer pattern per B1b report: Gem.loaded_specs + Dir glob.
+# Load the conformance kit from the lex-llm gem (shipped in spec/, not on the
+# load path): conformance.rb (Canonical::Conformance + the translator shared
+# example groups) and the SSOT v3 provider shared examples. NOT a directory
+# glob — the kit directory also ships lex-llm's own self-test specs
+# (echo_translator_spec, ssot_provider_conformance_spec), which are lex-llm's
+# to run, not this gem's.
 begin
   lex_llm_path = Gem.loaded_specs['lex-llm']&.full_gem_path
   if lex_llm_path
-    kit_path = File.join(lex_llm_path, 'spec', 'legion', 'extensions', 'llm', 'conformance')
-    Dir[File.join(kit_path, '**', '*.rb')].each { |f| require f } if Dir.exist?(kit_path)
+    kit_dir = File.join(lex_llm_path, 'spec', 'legion', 'extensions', 'llm', 'conformance')
+    %w[conformance.rb ssot_provider_examples.rb].each do |kit_file|
+      require File.join(kit_dir, kit_file)
+    end
   end
 rescue StandardError => e
   log.warn("Failed to load conformance kit: #{e.message}") if respond_to?(:log)
