@@ -15,7 +15,6 @@ module Legion
     module Llm
       # Amazon Bedrock provider extension namespace.
       module Bedrock
-        extend ::Legion::Extensions::Core if ::Legion::Extensions.const_defined?(:Core, false)
         extend Legion::Logging::Helper
         extend Legion::Extensions::Llm::AutoRegistration
         extend CredentialDiscovery
