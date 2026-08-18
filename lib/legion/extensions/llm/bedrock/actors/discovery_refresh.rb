@@ -439,19 +439,20 @@ module Legion
 
             # SSOT instance source, shared with the fleet worker/runner: every
             # resolvable-credential candidate from Bedrock.discover_instances
-            # (settings, env, claude, sigv4, broker), minus disabled,
-            # credential-less, and reserved-name entries. Credential-less
-            # configs (including the synthetic instances.default) are never
-            # claimed — there is no fallback identity to claim under — and a
-            # config literally named 'default' is the reserved InstanceKey
-            # identity (the router keys instances.<name> by the operator's
-            # name; 'default' is not one).
+            # (settings, env, claude, sigv4, broker), minus disabled and
+            # credential-less entries. An instance named 'default' is skipped
+            # ONLY when it is the unmodified synthetic template (the
+            # instances.default that ProviderSettings.build always nests from
+            # Bedrock.default_settings — placeholder/nil credentials); a
+            # configured 'default' (real operator credentials) is a plain
+            # instance label and is claimable (v2 parity).
             def claimable_instances
               Bedrock.discover_instances.each_with_object({}) do |(name, instance_cfg), claimable|
-                if name.to_s == 'default'
+                if unconfigured_default?(name: name, instance_cfg: instance_cfg)
                   log.warn(
-                    "[bedrock][actor] instance=#{name} skipped: 'default' is the reserved " \
-                    'InstanceKey identity — name the instance to claim it'
+                    "[bedrock][actor] instance=#{name} skipped: unmodified synthetic default " \
+                    'template (no operator credentials — configure a real credential under ' \
+                    'instances.default or rename the instance to claim it)'
                   )
                   next
                 end
@@ -478,6 +479,32 @@ module Legion
                instance_cfg[:bedrock_profile]].any? do |value|
                 value.is_a?(::String) && !value.strip.empty?
               end
+            end
+
+            # v2 parity: the name 'default' alone is not a skip reason — v2
+            # accepted a configured 'default' as a plain instance label. Only
+            # the UNMODIFIED synthetic template (the instances.default that
+            # ProviderSettings.build always nests from Bedrock.default_settings,
+            # placeholder/nil credentials) is skipped: there is no operator
+            # identity to claim under.
+            def unconfigured_default?(name:, instance_cfg:)
+              return false unless name.to_s == 'default'
+
+              instance_cfg.except(:source, :credential_fingerprint, :capabilities) ==
+                unmodified_default_template
+            end
+
+            # The nested template in the same normalized form
+            # discover_instances yields candidates in. :source /
+            # :credential_fingerprint / :capabilities are per-run provenance
+            # added downstream and are excluded from the compare.
+            def unmodified_default_template
+              @unmodified_default_template ||=
+                Bedrock.dedup_config(
+                  Bedrock.normalize_instance_config(
+                    Bedrock.default_settings.dig(:instances, :default) || {}
+                  )
+                )
             end
 
             def claim_and_activate_instance(name:, instance_cfg:)

@@ -81,13 +81,57 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     end
   end
 
-  describe 'reserved name (default)' do
-    before do
-      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
-                                                    .and_return(instances: { default: east_config })
+  describe 'default instance (template-conditional skip, v2 parity)' do
+    # The unmodified synthetic template: the instances.default that
+    # ProviderSettings.build always nests from Bedrock.default_settings
+    # (placeholder/nil credentials).
+    let(:template_raw) { Legion::Extensions::Llm::Bedrock.default_settings.dig(:instances, :default) }
+
+    # The template as discover_instances would yield it as a candidate
+    # (normalized form + per-run source/fingerprint/capabilities provenance).
+    def template_candidate
+      normalized = Legion::Extensions::Llm::Bedrock.dedup_config(
+        Legion::Extensions::Llm::Bedrock.normalize_instance_config(template_raw)
+      )
+      normalized.merge(
+        source: credential_sources.source_tag(:settings, 'extensions.llm.bedrock.instances.default'),
+        credential_fingerprint: credential_sources.config_fingerprint(normalized),
+        tier: :cloud,
+        capabilities: Legion::Extensions::Llm::Bedrock::DEFAULT_CAPABILITIES.dup
+      )
     end
 
-    it 'never claims a config named default (the reserved InstanceKey identity)' do
+    it 'excludes the unmodified synthetic template from the claimable set' do
+      allow(Legion::Extensions::Llm::Bedrock).to receive(:discover_instances).and_return(
+        default: template_candidate
+      )
+
+      actor = described_class.new
+      expect(actor.send(:claimable_instances)).to be_empty
+      actor.shutdown
+    end
+
+    it 'keeps a configured default (real credentials) in the claimable set' do
+      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock).and_return(
+        instances: {
+          default: { region: 'us-east-1', bearer_token: 'tok-default', enabled: true }
+        }
+      )
+
+      actor = described_class.new
+      # Provider-layer decision only: the local lex-llm (0.7.2) InstanceKey
+      # still rejects 'default', so this spec stops at the claimable set and
+      # does not exercise an end-to-end claim.
+      claimable = actor.send(:claimable_instances)
+      expect(claimable.keys).to eq([:default])
+      expect(claimable[:default][:bearer_token]).to eq('tok-default')
+      actor.shutdown
+    end
+
+    it 'never claims the unmodified template nested in settings' do
+      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
+                                                    .and_return(instances: { default: template_raw })
+
       actor = described_class.new
       actor.manual
 
