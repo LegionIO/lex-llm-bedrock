@@ -162,10 +162,9 @@ module Legion
               parts = []
               parts << system.to_s unless system.to_s.empty?
               messages.each do |msg|
-                role = msg.respond_to?(:role) ? msg.role.to_s : (msg[:role] || msg['role']).to_s
-                next unless role == 'system'
+                next unless msg.role.to_s == 'system'
 
-                content = msg.respond_to?(:content) ? msg.content : (msg[:content] || msg['content'])
+                content = msg.content
                 text = content.is_a?(Array) ? content.filter_map { |b| b[:text] || b['text'] }.join("\n") : content.to_s
                 parts << text unless text.empty?
               end
@@ -191,7 +190,7 @@ module Legion
 
             def format_invoke_model_messages(messages)
               formatted = messages.filter_map do |msg|
-                role = msg.respond_to?(:role) ? msg.role.to_s : (msg[:role] || msg['role']).to_s
+                role = msg.role.to_s
                 next if role == 'system'
 
                 content = case role
@@ -211,7 +210,7 @@ module Legion
             end
 
             def format_invoke_model_content(msg)
-              content = msg.respond_to?(:content) ? msg.content : (msg[:content] || msg['content'])
+              content = msg.content
               return [] if content.nil?
 
               if content.is_a?(String)
@@ -229,21 +228,17 @@ module Legion
             end
 
             def format_invoke_model_tool_result(msg)
-              tool_call_id = if msg.respond_to?(:tool_call_id)
-                               msg.tool_call_id
-                             else
-                               msg[:tool_call_id] || msg['tool_call_id']
-                             end
-              content = msg.respond_to?(:tool_results) ? msg.tool_results.to_s : (msg[:content] || msg['content']).to_s
+              tool_call_id = msg.tool_call_id
+              content = msg.tool_results.to_s
               [{ type: 'tool_result', tool_use_id: tool_call_id, content: [{ type: 'text', text: content }] }]
             end
 
             def format_invoke_model_assistant(msg)
               blocks = []
-              text = msg.respond_to?(:content) ? msg.content : (msg[:content] || msg['content'])
+              text = msg.content
               blocks << { type: 'text', text: text.to_s } unless text.to_s.strip.empty?
 
-              tool_calls = msg.respond_to?(:tool_calls) ? msg.tool_calls : (msg[:tool_calls] || msg['tool_calls'] || {})
+              tool_calls = msg.tool_calls
               call_array = tool_calls.is_a?(Hash) ? tool_calls.values : Array(tool_calls)
 
               call_array.each do |call|

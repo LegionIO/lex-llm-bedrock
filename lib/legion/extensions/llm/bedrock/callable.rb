@@ -48,6 +48,10 @@ module Legion
             def chat(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
                      thinking: nil, params: {}, **opts)
               dispatch! do
+                # Canonical boundary (N x N law): pipeline dispatch delivers
+                # Canonical::Message objects only. Hash/legacy shapes are the
+                # bypass class — reject loudly, never coerce.
+                provider.enforce_canonical_messages!(messages)
                 provider.chat(messages: messages, model: model, temperature: temperature, max_tokens: max_tokens,
                               tools: tools, tool_prefs: tool_prefs, thinking: thinking, params: params.merge(opts))
               end
@@ -56,6 +60,7 @@ module Legion
             def stream_chat(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
                             thinking: nil, params: {}, **opts, &)
               dispatch! do
+                provider.enforce_canonical_messages!(messages)
                 provider.stream(messages: messages, model: model, temperature: temperature, max_tokens: max_tokens,
                                 tools: tools, tool_prefs: tool_prefs, thinking: thinking,
                                 params: params.merge(opts), &)
@@ -68,6 +73,7 @@ module Legion
 
             def count_tokens(messages:, model:, system: nil, params: {}, **opts)
               dispatch! do
+                provider.enforce_canonical_messages!(messages)
                 provider.count_tokens(messages: messages, model: model, system: system, params: params.merge(opts))
               end
             end

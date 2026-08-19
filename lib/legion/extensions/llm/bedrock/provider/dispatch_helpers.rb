@@ -20,6 +20,7 @@ module Legion
               thinking: nil,
               **opts
             )
+              messages = build_provider_messages(messages)
               # Passthrough request params that do not map to an explicit
               # keyword reach the Converse payload, never silently dropped.
               params = params.merge(opts)
@@ -46,6 +47,7 @@ module Legion
 
             def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
                        thinking: nil, **opts, &)
+              messages = build_provider_messages(messages)
               # Passthrough request params that do not map to an explicit
               # keyword reach the Converse payload, never silently dropped.
               params = params.merge(opts)
@@ -78,6 +80,7 @@ module Legion
             end
 
             def count_tokens(messages:, model:, system: nil, params: {}, **opts)
+              messages = build_provider_messages(messages)
               # Passthrough request params that do not map to an explicit
               # keyword reach the CountTokens payload, never silently dropped.
               params = params.merge(opts)
@@ -134,6 +137,37 @@ module Legion
             end
 
             private
+
+            # Canonical boundary (N x N law): pipeline dispatch delivers
+            # Canonical::Message objects; the provider-native Chat facade
+            # delivers lex-llm Message. Both are object shapes this spoke
+            # normalizes to its native Message before any wire formatting.
+            # Plain Hashes are the bypass class (the 2026-08-19 incident) —
+            # reject loudly, never silently re-canonicalize.
+            def build_provider_messages(messages)
+              messages.map do |message|
+                next message if message.is_a?(Legion::Extensions::Llm::Message)
+                next to_provider_message(message) if message.is_a?(Legion::Extensions::Llm::Canonical::Message)
+
+                raise ArgumentError,
+                      "bedrock provider input must be Canonical::Message objects, got #{message.class} — " \
+                      'non-canonical message shapes must not cross the dispatch boundary'
+              end
+            end
+
+            # Provider-native Message from a Canonical::Message. The converse
+            # and invoke_model formatters read the native Message API
+            # (tool_call?/tool_result?/tool_results), so the canonical object is
+            # projected onto it. Wire shape is unchanged — only the in-memory
+            # message representation differs from the raw canonical input.
+            def to_provider_message(canonical)
+              Legion::Extensions::Llm::Message.new(
+                role: canonical.role,
+                content: canonical.content,
+                tool_calls: canonical.tool_calls,
+                tool_call_id: canonical.tool_call_id
+              )
+            end
 
             def log_chat_request(request, model, tools, params, tool_prefs)
               log.debug do

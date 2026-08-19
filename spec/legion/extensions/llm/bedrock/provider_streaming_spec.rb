@@ -99,7 +99,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       chunks = []
       message = provider.send(
         :invoke_model_stream,
-        messages: [{ role: :user, content: 'hi' }], model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+        messages: [Legion::Extensions::Llm::Message.new(role: :user, content: 'hi')],
+        model: 'anthropic.claude-sonnet-4-20250514-v1:0',
         temperature: nil, max_tokens: 100, tools: {}, tool_prefs: nil, thinking: nil
       ) { |chunk| chunks << chunk }
 

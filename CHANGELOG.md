@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.6] - 2026-08-19
+
+### Changed
+- **Canonical dispatch boundary (N x N law)** — The production `BedrockCallable#chat` / `#stream_chat` / `#count_tokens` operations now call `Provider#enforce_canonical_messages!` before dispatch, and the provider's message-conversion seam (`DispatchHelpers#build_provider_messages`) accepts only `Canonical::Message` (pipeline dispatch) or the provider-native `Legion::Extensions::Llm::Message` (Chat facade); anything else raises a loud `ArgumentError`. The lenient message-level hash re-canonicalization that masked the 2026-08-19 hash-bypass defect is removed from the invoke_model render path. Client request formats and the Bedrock wire payload shape are unchanged.
+- **Dependency floor** — Requires `lex-llm >= 0.7.7` for `Provider#enforce_canonical_messages!` (the N x N dispatch boundary). The Gemfile adds a local-tree `lex-llm` path dependency to the test group so the adjacent checkout resolves against 0.7.7 during development.
+
+### Added
+- **Dispatch-boundary regression guards** — The SSOT v3 conformance spec now asserts that plain-Hash messages are rejected loudly at both the callable dispatch boundary and the provider render seam, and the model-policy / streaming specs that previously fed incidental Hash messages now use canonical inputs.
+
 ## [0.5.5] - 2026-08-19
 
 ### Added

@@ -271,8 +271,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     it 'fails closed in #chat for a model excluded by the whitelist, with no Bedrock call' do
       allow(runtime_client).to receive(:converse)
 
-      expect { provider.chat(messages: [{ role: 'user', content: 'hi' }], model: 'anthropic.claude-sonnet-4-6') }
-        .to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
+      expect do
+        provider.chat(
+          messages: [Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hi')],
+          model: 'anthropic.claude-sonnet-4-6'
+        )
+      end.to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
       expect(runtime_client).not_to have_received(:converse)
     end
 
@@ -280,7 +284,10 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       allow(runtime_client).to receive(:converse_stream)
 
       expect do
-        provider.stream(messages: [{ role: 'user', content: 'hi' }], model: 'anthropic.claude-sonnet-4-6') do |chunk|
+        provider.stream(
+          messages: [Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hi')],
+          model: 'anthropic.claude-sonnet-4-6'
+        ) do |chunk|
           chunk
         end
       end.to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)

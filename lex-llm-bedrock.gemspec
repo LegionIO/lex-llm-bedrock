@@ -29,5 +29,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'legion-logging', '>= 1.3.2'
   spec.add_dependency 'legion-settings', '>= 1.4.2'
   spec.add_dependency 'legion-transport', '>= 1.4.14'
-  spec.add_dependency 'lex-llm', '>= 0.7.6'
+  # 0.7.7 carries Provider#enforce_canonical_messages! (the N x N dispatch
+  # boundary) and the cache_control canonical member used at the provider seam.
+  spec.add_dependency 'lex-llm', '>= 0.7.7'
 end

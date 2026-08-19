@@ -647,6 +647,28 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end
   end
 
+  # ─── Dispatch boundary regression guards (live repro) ──────────────────────
+  # The 2026-08-19 defect class: SSOT v3 local dispatch passed executor Hash
+  # messages straight to the provider callable, and the provider's lenient hash
+  # re-canonicalization masked the bypass. The boundary now rejects plain Hash
+  # messages LOUDLY at both the callable (strict Canonical-only) and the
+  # provider render seam (Canonical + provider-native Message only).
+  describe 'dispatch boundary regression guards (live repro)' do
+    let(:callable) { ssot_harness.build_callable(instance_config: ssot_harness.instance_configs.first) }
+    let(:provider) { Legion::Extensions::Llm::Bedrock::Provider.new(ssot_harness.instance_configs.first) }
+    let(:hash_request) { [{ role: 'user', content: 'What is the capital of France?' }] }
+
+    it 'rejects plain Hash messages at the callable dispatch boundary' do
+      expect { callable.chat(messages: hash_request, model: 'us.anthropic.claude-sonnet-4-6') }
+        .to raise_error(ArgumentError, /Canonical::Message/)
+    end
+
+    it 'rejects plain Hash messages at the provider render seam' do
+      expect { provider.chat(messages: hash_request, model: 'us.anthropic.claude-sonnet-4-6') }
+        .to raise_error(ArgumentError, /Canonical::Message/)
+    end
+  end
+
   # ─── OfferingDraft structure ──────────────────────────────────────────────
 
   describe 'OfferingDraft structure' do
