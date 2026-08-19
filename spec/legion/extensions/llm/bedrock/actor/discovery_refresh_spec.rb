@@ -209,6 +209,53 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     end
   end
 
+  describe 'startup publication validation' do
+    it 'does not claim malformed weighted offerings and activates once after correction' do
+      bedrock_settings.merge!(weight: false, instances: { east: east_config })
+      settings_root[:llm] = { bedrock: bedrock_settings }
+      summary = {
+        model_id: 'anthropic.claude-test',
+        input_modalities: %w[TEXT],
+        output_modalities: %w[TEXT],
+        response_streaming_supported: true
+      }
+      client = double(list_foundation_models: Struct.new(:model_summaries).new([summary]))
+      actor = described_class.new
+      allow(actor).to receive(:build_bedrock_client).and_return(client)
+      allow(Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable).to receive(:new).and_call_original
+      allow(Legion::Extensions::Llm::Inventory::ProbeCoordinator).to receive(:new).and_call_original
+      allow(Legion::Extensions::Llm::Inventory::WeightReconciler).to receive(:track_initializing!).and_call_original
+      allow(registry).to receive(:claim_instance).and_call_original
+      allow(registry).to receive(:activate_instance_snapshot).and_call_original
+      instance_key = key_for(:east, east_config)
+
+      actor.manual
+
+      expect(registry.snapshot.publication_status(instance_key: instance_key)).to be_nil
+      expect(registry.snapshot.instance(instance_key: instance_key)).to be_nil
+      expect(actor.instance_variable_get(:@instance_states)).to be_empty
+      expect(registry).not_to have_received(:claim_instance)
+      expect(Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable).not_to have_received(:new)
+      expect(Legion::Extensions::Llm::Inventory::ProbeCoordinator).not_to have_received(:new)
+      expect(Legion::Extensions::Llm::Inventory::WeightReconciler).not_to have_received(:track_initializing!)
+
+      bedrock_settings[:weight] = 100
+      actor.manual
+
+      state = actor.instance_variable_get(:@instance_states).fetch('east')
+      expect(registry.snapshot.publication_status(instance_key: instance_key).state).to eq(:complete)
+      expect(registry.snapshot.instance(instance_key: instance_key).availability.state).to eq(:available)
+      expect(state).to include(published: true, sequence: 0)
+      expect(state[:publisher_token]).not_to be_nil
+      expect(registry).to have_received(:claim_instance).once
+      expect(registry).to have_received(:activate_instance_snapshot).once
+      expect(Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable).to have_received(:new).once
+      expect(Legion::Extensions::Llm::Inventory::ProbeCoordinator).to have_received(:new).once
+      expect(Legion::Extensions::Llm::Inventory::WeightReconciler).to have_received(:track_initializing!).once
+      actor.shutdown
+    end
+  end
+
   describe 'recovery after an initial readiness failure (D4)' do
     # No stub_responses here — the fake client in the test drives readiness.
     let(:unstubbed_east) { east_config(bedrock_stub_responses: nil) }

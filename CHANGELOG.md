@@ -10,6 +10,9 @@
 - **Atomic writer lifecycle** — Initial and recovery activation, ordinary replacement, state removal, sequence allocation, cached offerings, and dormant-weight tracking now share one actor mutex. Initializing states never replace, failed publisher calls leave the cache retryable, and late readiness cannot resurrect a removed state.
 - **Dependency floor** — Requires `lex-llm >= 0.7.6` for `WeightSchema`, weighted Inventory records, `WeightReconciler`, and `DormantWeightTracker`; the existing `legion-settings >= 1.4.2` floor is unchanged.
 
+### Fixed
+- **Startup validation cannot orphan an initializing claim** — Initial offering construction and write-time weight validation now finish before Bedrock creates a callable or probe coordinator and before Inventory issues a publisher token. A malformed weight leaves no Registry status, callable, token, or actor state; the next corrected cadence claims and activates normally.
+
 ## [0.5.4] - 2026-08-18
 
 ### Fixed
