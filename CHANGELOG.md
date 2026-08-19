@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.5] - 2026-08-19
+
+### Added
+- **Callable-path system conformance** — The production `BedrockCallable#chat` path now has a rendered-wire fixture proving a folded leading system message reaches the AWS Converse payload's native `system` field.
+
+### Changed
+- **Write-time SSOT lane weights** — Bedrock discovery computes the shared four-component weight pair for every offering, reconciles weight-only changes on the existing `Actors::Every` cadence, and publishes immutable weighted snapshots without adding a Settings callback, reload path, restart, migration, or operator step.
+- **Atomic writer lifecycle** — Initial and recovery activation, ordinary replacement, state removal, sequence allocation, cached offerings, and dormant-weight tracking now share one actor mutex. Initializing states never replace, failed publisher calls leave the cache retryable, and late readiness cannot resurrect a removed state.
+- **Dependency floor** — Requires `lex-llm >= 0.7.6` for `WeightSchema`, weighted Inventory records, `WeightReconciler`, and `DormantWeightTracker`; the existing `legion-settings >= 1.4.2` floor is unchanged.
+
 ## [0.5.4] - 2026-08-18
 
 ### Fixed
