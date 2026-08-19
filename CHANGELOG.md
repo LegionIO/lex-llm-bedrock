@@ -12,6 +12,7 @@
 
 ### Fixed
 - **Startup validation cannot orphan an initializing claim** — Initial offering construction and write-time weight validation now finish before Bedrock creates a callable or probe coordinator and before Inventory issues a publisher token. A malformed weight leaves no Registry status, callable, token, or actor state; the next corrected cadence claims and activates normally.
+- **Ordinary discovery compares the complete offering contract** — Replacement detection now retains every authoritative `OfferingDraft` field and ignores only evidence observation timestamps. Catalog order is set-like while duplicate multiplicity remains visible, so metadata, quota, evidence-source/value, publication-source, native-key, capability, operation, tier, or weight drift publishes exactly once without churn from reorder-only discovery.
 
 ## [0.5.4] - 2026-08-18
 

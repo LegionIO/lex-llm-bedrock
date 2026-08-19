@@ -48,6 +48,25 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     [client, state]
   end
 
+  def offering_draft(actor:, model:, config: east_config)
+    actor.send(
+      :build_offering_draft,
+      model_id: model,
+      summary: {
+        model_id: model,
+        input_modalities: %w[TEXT],
+        output_modalities: %w[TEXT],
+        response_streaming_supported: true
+      },
+      instance_cfg: config,
+      instance_key: key_for(:east, config)
+    )
+  end
+
+  def ready_result
+    Legion::Extensions::Llm::Inventory::ReadinessResult.new(ready: true, reason: 'ready')
+  end
+
   before do
     registry.reset!
     # Isolate from ambient AWS credential sources (env/claude/broker) — these
@@ -252,6 +271,51 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
       expect(Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable).to have_received(:new).once
       expect(Legion::Extensions::Llm::Inventory::ProbeCoordinator).to have_received(:new).once
       expect(Legion::Extensions::Llm::Inventory::WeightReconciler).to have_received(:track_initializing!).once
+      actor.shutdown
+    end
+  end
+
+  describe 'ordinary catalog replacement' do
+    it 'replaces once when authoritative draft metadata changes without model, tier, or weight drift' do
+      actor = described_class.new
+      original = offering_draft(actor: actor, model: 'anthropic.claude-test')
+      changed = Legion::Extensions::Llm::Inventory::OfferingDraft.new(
+        **original.to_h, metadata: original.metadata.merge(catalog_revision: 'v2')
+      )
+      allow(actor).to receive(:discover_offerings_for_instance).and_return([original], [changed])
+      allow(actor).to receive_messages(claimable_instances: { east: east_config }, check_health: ready_result)
+      allow(registry).to receive(:replace_instance_snapshot).and_call_original
+
+      actor.manual
+      actor.manual
+
+      instance_key = key_for(:east, east_config)
+      state = actor.instance_variable_get(:@instance_states).fetch('east')
+      published = registry.snapshot.instance(instance_key: instance_key).offerings_by_id.values.fetch(0)
+      expect(registry).to have_received(:replace_instance_snapshot).once.with(hash_including(sequence: 1))
+      expect(state[:sequence]).to eq(1)
+      expect(published.metadata[:catalog_revision]).to eq('v2')
+      actor.shutdown
+    end
+
+    it 'does not replace when a freshly observed equivalent catalog only changes order and evidence timestamps' do
+      actor = described_class.new
+      original = %w[anthropic.claude-a anthropic.claude-b].map do |model|
+        offering_draft(actor: actor, model: model)
+      end
+      reordered = %w[anthropic.claude-b anthropic.claude-a].map do |model|
+        offering_draft(actor: actor, model: model)
+      end
+      allow(actor).to receive(:discover_offerings_for_instance).and_return(original, reordered)
+      allow(actor).to receive_messages(claimable_instances: { east: east_config }, check_health: ready_result)
+      allow(registry).to receive(:replace_instance_snapshot).and_call_original
+
+      actor.manual
+      actor.manual
+
+      state = actor.instance_variable_get(:@instance_states).fetch('east')
+      expect(registry).not_to have_received(:replace_instance_snapshot)
+      expect(state[:sequence]).to eq(0)
       actor.shutdown
     end
   end

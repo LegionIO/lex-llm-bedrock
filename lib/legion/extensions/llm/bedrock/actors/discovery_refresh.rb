@@ -445,6 +445,11 @@ module Legion
           # tick reconciliation, shutdown, and the post-commit settings health
           # + capabilities display writes (D14).
           module DiscoveryOrchestrationHelpers
+            SCALAR_EVIDENCE_FIELDS = %i[
+              context_evidence max_output_evidence embedding_dimensions_evidence
+              model_revision_evidence tokenizer_evidence
+            ].freeze
+
             private
 
             # SSOT instance source, shared with the fleet worker/runner: every
@@ -713,17 +718,30 @@ module Legion
             end
 
             def offerings_signature(offerings)
-              signatures = offerings.map do |draft|
-                {
-                  model: draft.model,
-                  tier: draft.tier,
-                  weight_inputs: draft.weight_inputs,
-                  base_weight: draft.base_weight,
-                  operations: draft.operation_evidence.transform_values(&:status).sort.to_h,
-                  capabilities: draft.capability_evidence.transform_values(&:status).sort.to_h
-                }
+              contracts = offerings.map { |draft| stable_offering_contract(draft) }
+              grouped = contracts.group_by do |contract|
+                [contract.fetch(:provider_native_key), contract.fetch(:model)]
               end
-              signatures.sort_by { |entry| entry[:model].to_s }
+              grouped.sort_by { |identity, _| identity.map { |value| value.to_s.b } }
+                     .to_h.transform_values(&:tally)
+            end
+
+            def stable_offering_contract(draft)
+              contract = draft.to_h
+              contract[:operation_evidence] = stable_evidence_map(contract.fetch(:operation_evidence))
+              contract[:capability_evidence] = stable_evidence_map(contract.fetch(:capability_evidence))
+              SCALAR_EVIDENCE_FIELDS.each do |field|
+                contract[field] = stable_evidence(contract.fetch(field))
+              end
+              contract
+            end
+
+            def stable_evidence_map(evidence_by_key)
+              evidence_by_key.transform_values { |evidence| stable_evidence(evidence) }
+            end
+
+            def stable_evidence(evidence)
+              evidence.to_h.except(:observed_at)
             end
 
             def remove_instance_state(instance_id:)
