@@ -207,7 +207,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
                usage: { input_tokens: 3, output_tokens: 5 })
     )
 
-    result = provider.chat(messages: [message], model: model, temperature: 0.2)
+    result = provider.chat(messages: [message], model: model, params: CANONICAL::Params.build(temperature: 0.2))
 
     expect(runtime_client).to have_received(:converse).with(
       hash_including(

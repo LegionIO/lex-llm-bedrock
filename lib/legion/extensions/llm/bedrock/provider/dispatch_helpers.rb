@@ -9,33 +9,20 @@ module Legion
           # These methods form the contract between the framework executor and the
           # Bedrock provider instance.
           module DispatchHelpers
-            def chat(
-              messages:,
-              model:,
-              temperature: nil,
-              max_tokens: nil,
-              tools: {},
-              tool_prefs: nil,
-              params: {},
-              thinking: nil,
-              **opts
-            )
+            # 08 F3: the completion funnel receives canonical values only —
+            # params is a Canonical::Params (the callable folds the wire params
+            # at the boundary); temperature/max_tokens are params members
+            # (05 O4), never named completion keys.
+            def chat(messages:, model:, tools: {}, tool_prefs: nil, params: nil, thinking: nil)
               enforce_canonical_messages!(messages)
-              # Passthrough request params that do not map to an explicit
-              # keyword reach the Converse payload, never silently dropped.
-              params = params.merge(opts)
               enforce_model_allowed!(model_id(model))
               log.info { "bedrock.provider.chat: model=#{model_id(model)} messages=#{messages.size}" }
 
               if anthropic_model?(model_id(model)) && (thinking || (tools && !tools.empty?))
-                return invoke_model_chat(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:,
-                                         thinking:, params:)
+                return invoke_model_chat(messages:, model:, tools:, tool_prefs:, thinking:, params:)
               end
 
-              request = Utils.deep_merge(
-                converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:, thinking:),
-                params
-              )
+              request = converse_request(messages, model:, params:, tools:, tool_prefs:, thinking:)
               log_chat_request(request, model, tools, params, tool_prefs)
 
               start_time = Time.now
@@ -45,35 +32,27 @@ module Legion
               parse_converse_response(response, model_id(model))
             end
 
-            def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
-                       thinking: nil, **opts, &)
+            def stream(messages:, model:, tools: {}, tool_prefs: nil, params: nil, thinking: nil, &)
               enforce_canonical_messages!(messages)
-              # Passthrough request params that do not map to an explicit
-              # keyword reach the Converse payload, never silently dropped.
-              params = params.merge(opts)
               enforce_model_allowed!(model_id(model))
               log.info do
                 "bedrock.provider.stream: model=#{model_id(model)} messages=#{messages.size} tools=#{tools.size}"
               end
 
               if anthropic_model?(model_id(model)) && (thinking || (tools && !tools.empty?))
-                return invoke_model_stream(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:,
-                                           thinking:, params:, &)
+                return invoke_model_stream(messages:, model:, tools:, tool_prefs:, thinking:, params:, &)
               end
 
-              request = Utils.deep_merge(
-                converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:, thinking:),
-                params
-              )
+              request = converse_request(messages, model:, params:, tools:, tool_prefs:, thinking:)
               log.debug do
                 "bedrock.provider.stream: request prepared model=#{model_id(model)} tools=#{tools.size} " \
-                  "tool_choice=#{tool_choice_label(tool_prefs)} param_keys=#{params.keys.map(&:to_s).sort.join(',')}"
+                  "tool_choice=#{tool_choice_label(tool_prefs)} param_keys=#{param_keys(params)}"
               end
               thinking_config = request.dig(:additional_model_request_fields, :thinking)
               log.debug { "bedrock.provider.stream: thinking_config=#{thinking_config.inspect}" } if thinking_config
 
               start_time = Time.now
-              result = stream_converse(request, model_id(model), request_id: params[:request_id], &)
+              result = stream_converse(request, model_id(model), request_id: request_id_from_params(params), &)
               elapsed = ((Time.now - start_time) * 1000).round
               log.debug { "bedrock.provider.stream: completed model=#{model_id(model)} elapsed_ms=#{elapsed}" }
               result
@@ -123,22 +102,40 @@ module Legion
             # The nameless ** accepts and ignores HTTP-style kwargs the base
             # contract carries (headers:) — Bedrock transport is the AWS SDK,
             # which owns its own request signing.
-            def complete(messages, tools:, model:, params: {}, schema: nil,
+            def complete(messages, tools:, model:, params: nil, schema: nil,
                          thinking: nil, tool_prefs: nil, **, &)
-              payload = params.is_a?(::Hash) ? params.dup : {}
-              payload[:additional_model_request_fields] ||= {}
-              payload[:additional_model_request_fields][:response_format] = schema if schema
+              canonical = params
+              if schema
+                source = params ? params.to_h : {}
+                canonical = Legion::Extensions::Llm::Canonical::Params.from_hash(
+                  source.merge(response_format: schema)
+                )
+              end
 
               if block_given?
-                stream(messages: messages, model: model, temperature: nil, max_tokens: nil,
-                       tools: tools, tool_prefs: tool_prefs, params: payload, thinking: thinking, &)
+                stream(messages: messages, model: model, tools: tools, tool_prefs: tool_prefs,
+                       params: canonical, thinking: thinking, &)
               else
-                chat(messages: messages, model: model, temperature: nil, max_tokens: nil,
-                     tools: tools, tool_prefs: tool_prefs, params: payload, thinking: thinking)
+                chat(messages: messages, model: model, tools: tools, tool_prefs: tool_prefs,
+                     params: canonical, thinking: thinking)
               end
             end
 
             private
+
+            # Canonical params log projection (08 F3: the funnel carries
+            # canonical values, not a raw hash).
+            def param_keys(params)
+              return '' if params.nil?
+
+              params.to_h.keys.map(&:to_s).sort.join(',')
+            end
+
+            # The stream correlation id travels as a folded wire param (04 L5
+            # metadata) — never a named completion key.
+            def request_id_from_params(params)
+              params&.metadata&.[](:request_id)
+            end
 
             def log_chat_request(request, model, tools, params, tool_prefs)
               log.debug do

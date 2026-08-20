@@ -23,12 +23,11 @@ module Legion
               model_id.to_s.start_with?('anthropic.', 'us.anthropic.', 'eu.anthropic.', 'ap.anthropic.')
             end
 
-            def invoke_model_chat(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:,
-                                  thinking:, _params: nil, **_rest)
+            def invoke_model_chat(messages:, model:, tools: {}, tool_prefs: nil, thinking: nil, params: nil)
               mid = model_id(model)
               body = build_invoke_model_body(
-                messages: messages, model: mid, temperature: temperature, max_tokens: max_tokens,
-                tools: tools, tool_prefs: tool_prefs, thinking: thinking
+                messages: messages, model: mid, tools: tools, tool_prefs: tool_prefs,
+                thinking: thinking, params: params
               )
               log.debug { "bedrock.provider.invoke_model_chat: model=#{mid} thinking=#{thinking.inspect}" }
 
@@ -50,16 +49,15 @@ module Legion
               parse_invoke_model_response_hash(parsed_body, mid)
             end
 
-            def invoke_model_stream(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:,
-                                    thinking:, params: {}, **_rest, &)
+            def invoke_model_stream(messages:, model:, tools: {}, tool_prefs: nil, thinking: nil, params: nil, &)
               mid = model_id(model)
               body = build_invoke_model_body(
-                messages: messages, model: mid, temperature: temperature, max_tokens: max_tokens,
-                tools: tools, tool_prefs: tool_prefs, thinking: thinking, streaming: true
+                messages: messages, model: mid, tools: tools, tool_prefs: tool_prefs,
+                thinking: thinking, params: params
               )
               log.debug { "bedrock.provider.invoke_model_stream: model=#{mid} thinking=#{thinking.inspect}" }
 
-              request_id = params.is_a?(::Hash) ? params[:request_id] : nil
+              request_id = params&.metadata&.[](:request_id)
               state = { accumulated: +'', thinking: +'', final_usage: nil, stop_reason: nil,
                         tool_use_blocks: [], current_tool_use: nil, in_thinking: false,
                         raw_events: [], request_id: request_id }
@@ -129,30 +127,31 @@ module Legion
               end
             end
 
-            def build_invoke_model_body(messages:, temperature:, max_tokens:, tools:, tool_prefs:, thinking:, **rest)
-              system_content = extract_invoke_model_system(messages, system: rest[:system])
+            # 08 R1/F4: the Anthropic-wire renderer receives canonical values —
+            # max_tokens/temperature are read from the Canonical::Params members.
+            def build_invoke_model_body(messages:, model:, tools: {}, tool_prefs: nil, thinking: nil, params: nil)
+              system_content = extract_invoke_model_system(messages)
               body = {
-                max_tokens: max_tokens || 4096,
+                max_tokens: params&.max_tokens || 4096,
                 messages: format_invoke_model_messages(messages),
                 anthropic_version: 'bedrock-2023-05-31'
               }
               body[:system] = system_content if system_content
-              body[:temperature] = temperature if temperature
+              body[:temperature] = params&.temperature if params&.temperature
               if tools && !tools.empty?
                 tool_format = format_invoke_model_tools(tools, tool_prefs)
                 body[:tools] = tool_format[:tools]
                 body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
               end
               if thinking
-                thinking_cfg = invoke_model_thinking(model: rest[:model] || model_id(rest[:model]), thinking: thinking)
+                thinking_cfg = invoke_model_thinking(model: model, thinking: thinking)
                 body[:thinking] = thinking_cfg if thinking_cfg
               end
               body
             end
 
-            def extract_invoke_model_system(messages, system: nil)
+            def extract_invoke_model_system(messages)
               parts = []
-              parts << system.to_s unless system.to_s.empty?
               messages.each do |msg|
                 next unless msg.role.to_s == 'system'
 

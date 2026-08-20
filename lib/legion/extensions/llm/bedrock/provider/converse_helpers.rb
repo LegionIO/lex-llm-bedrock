@@ -14,17 +14,24 @@ module Legion
           module ConverseHelpers
             private
 
-            def converse_request(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:,
-                                 guardrail_config: nil, thinking: nil)
+            # 08 R1/F4: the request renderer receives canonical values —
+            # sampling scalars are read from the Canonical::Params members
+            # (params.temperature / params.max_tokens), never from a raw hash.
+            def converse_request(messages, model:, params:, tools:, tool_prefs:, thinking: nil)
+              inference_config = {
+                temperature: params&.temperature,
+                max_tokens: params&.max_tokens || model_max_tokens(model)
+              }.compact
+              additional = bedrock_additional_fields(thinking, model: model_id(model)) || {}
+              additional[:response_format] = params&.response_format if params&.response_format
+
               {
                 model_id: self.class.inference_profile_id(model_id(model), geo_prefix: geo_prefix),
                 messages: format_messages(messages.reject { |message| message.role == :system }),
                 system: format_system(messages),
-                inference_config: { temperature: temperature,
-                                    max_tokens: max_tokens || model_max_tokens(model) }.compact,
+                inference_config: inference_config,
                 tool_config: format_tool_config(tools, tool_prefs),
-                guardrail_config: guardrail_config,
-                additional_model_request_fields: bedrock_additional_fields(thinking, model: model_id(model))
+                additional_model_request_fields: additional.empty? ? nil : additional
               }.compact
             end
 

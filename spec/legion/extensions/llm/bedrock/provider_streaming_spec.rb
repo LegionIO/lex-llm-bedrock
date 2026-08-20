@@ -110,7 +110,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
         :invoke_model_stream,
         messages: [canonical::Message.build(role: :user, content: 'hi')],
         model: 'anthropic.claude-sonnet-4-20250514-v1:0',
-        temperature: nil, max_tokens: 100, tools: {}, tool_prefs: nil, thinking: nil
+        tools: {}, tool_prefs: nil, thinking: nil,
+        params: canonical::Params.build(max_tokens: 100)
       ) { |chunk| chunks << chunk }
 
       expect(chunks).to all(be_a(canonical::Chunk))
@@ -137,7 +138,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
         provider.send(
           :invoke_model_stream,
           messages: [], model: 'anthropic.claude-sonnet-4-20250514-v1:0',
-          temperature: nil, max_tokens: 100, tools: {}, tool_prefs: nil, thinking: nil
+          tools: {}, tool_prefs: nil, thinking: nil,
+          params: canonical::Params.build(max_tokens: 100)
         ) { |_c| nil }
       end.to raise_error(ArgumentError, 'boom')
     end

@@ -52,8 +52,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
     it 'omits the thinking key entirely for a non-thinking model' do
       body = provider.send(:build_invoke_model_body,
                            messages: [], model: 'anthropic.claude-3-haiku-20240307-v1:0',
-                           temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
-                           thinking: { budget_tokens: 2048 })
+                           tools: nil, tool_prefs: nil,
+                           thinking: { budget_tokens: 2048 },
+                           params: Legion::Extensions::Llm::Canonical::Params.build(max_tokens: 100))
 
       expect(body).not_to have_key(:thinking)
     end
@@ -61,8 +62,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
     it 'includes an enabled thinking block for a thinking model' do
       body = provider.send(:build_invoke_model_body,
                            messages: [], model: 'anthropic.claude-opus-4-5-20251101-v1:0',
-                           temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
-                           thinking: { budget_tokens: 2048 })
+                           tools: nil, tool_prefs: nil,
+                           thinking: { budget_tokens: 2048 },
+                           params: Legion::Extensions::Llm::Canonical::Params.build(max_tokens: 100))
 
       expect(body[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
     end
