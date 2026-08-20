@@ -44,17 +44,23 @@ Legion::Logging.setup(level: 'fatal', log_file: File::NULL, log_stdout: false, a
 require 'legion/extensions/llm/bedrock'
 
 # Load the conformance kit from the lex-llm gem (shipped in spec/, not on the
-# load path): conformance.rb (Canonical::Conformance + the translator shared
-# example groups), the SSOT v3 provider shared examples, and the 0.8.0
-# boundary/fleet/registry contract groups (B1/B2 run against the real
-# callable). NOT a directory glob — the kit directory also ships lex-llm's
-# own self-test specs (echo_translator_spec, ssot_provider_conformance_spec),
-# which are lex-llm's to run, not this gem's.
+# load path). EXPLICIT file list — never a directory glob: the kit directory
+# also ships lex-llm's own self-test specs (echo_translator_spec,
+# ssot_provider_conformance_spec), which are lex-llm's to run and LoadError
+# outside that repo.
 begin
   lex_llm_path = Gem.loaded_specs['lex-llm']&.full_gem_path
   if lex_llm_path
     kit_dir = File.join(lex_llm_path, 'spec', 'legion', 'extensions', 'llm', 'conformance')
-    %w[conformance.rb ssot_provider_examples.rb ssot_contract_examples.rb].each do |kit_file|
+    %w[
+      conformance.rb
+      canonical_type_examples.rb
+      client_translator_examples.rb
+      provider_translator_examples.rb
+      provider_tool_rendering_examples.rb
+      ssot_contract_examples.rb
+      ssot_provider_examples.rb
+    ].each do |kit_file|
       require File.join(kit_dir, kit_file)
     end
   end
