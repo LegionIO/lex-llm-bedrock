@@ -18,9 +18,11 @@ class FakeConverseStream
   end
 end
 
+CANONICAL = Legion::Extensions::Llm::Canonical
+
 RSpec.describe Legion::Extensions::Llm::Bedrock do
   let(:provider) { described_class::Provider.new(bedrock_region: 'us-west-2', bedrock_stub_responses: true) }
-  let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
+  let(:message) { CANONICAL::Message.build(role: :user, content: 'hello') }
   let(:model) do
     Legion::Extensions::Llm::Model::Info.new(id: 'anthropic.claude-3-haiku-20240307-v1:0', provider: :bedrock,
                                              metadata: { max_output_tokens: 2048 })
@@ -33,6 +35,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     allow(Aws::Bedrock::Client).to receive(:new).and_return(bedrock_client)
     allow(bedrock_client).to receive(:list_foundation_models)
   end
+
+  after { Legion::Extensions::Llm::Inventory::Registry.reset! }
 
   it 'uses the shared logging helper on the extension namespace and provider' do
     expect(described_class.singleton_class.ancestors).to include(Legion::Logging::Helper)
@@ -57,24 +61,69 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
               'ListFoundationModels'])
   end
 
-  it 'maps offline offerings with Bedrock family and inferred model families' do
-    offerings = provider.discover_offerings(live: false)
-    claude = offerings.find { |offering| offering.model.start_with?('anthropic.') }
-    embed = offerings.find(&:embedding?)
+  describe 'offerings (07 C5: Registry-snapshot read path)' do
+    def ssot_actor
+      @ssot_actor ||= Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh.new
+    end
 
-    expect(claude.provider_family).to eq(:bedrock)
-    expect(claude.metadata).to include(model_family: :anthropic, alias: 'claude-3-haiku')
-    expect(claude.capabilities).to include(:chat, :streaming)
-    expect(embed.model).to eq('amazon.titan-embed-text-v2:0')
-    expect(embed.usage_type).to eq(:embedding)
+    # Activates one instance under the operator config name the base read path
+    # keys on (provider_instance_id), with production writer drafts.
+    def activate_default_instance(models)
+      registry = Legion::Extensions::Llm::Inventory::Registry
+      key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+        provider_family: :bedrock, instance_id: 'default'
+      )
+      coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
+        instance_key: key, enqueue: ->(**) { true }
+      )
+      token = registry.claim_instance(instance_key: key, callable: Object.new, probe_request_handle: coordinator)
+      probe = registry.readiness_probe_started(instance_key: key, publisher_token: token)
+      offerings = models.map do |model_id|
+        ssot_actor.send(
+          :build_offering_draft,
+          model_id: model_id,
+          summary: { model_id: model_id, input_modalities: %w[TEXT], output_modalities: %w[TEXT],
+                     response_streaming_supported: true },
+          instance_cfg: { bedrock_region: 'us-west-2', bedrock_access_key_id: 'AKIAIOSFODNN7EXAMPLE1',
+                          tier: :cloud },
+          instance_key: key
+        )
+      end
+      registry.activate_instance_snapshot(
+        publisher_token: token, instance_key: key, offerings: offerings, sequence: 0, probe_token: probe
+      )
+    end
+
+    it 'serves the activated inventory offerings for the instance from the snapshot' do
+      activate_default_instance(%w[anthropic.claude-3-haiku-20240307-v1:0 amazon.titan-embed-text-v2:0])
+
+      offerings = provider.discover_offerings
+
+      expect(offerings.size).to eq(2)
+      expect(offerings.map(&:model).sort).to eq(
+        %w[amazon.titan-embed-text-v2:0 anthropic.claude-3-haiku-20240307-v1:0].sort
+      )
+      expect(offerings.first.instance_key.instance_id).to eq('default')
+      expect(offerings.first).to be_a(Legion::Extensions::Llm::Inventory::OfferingRecord)
+    end
+
+    it 'returns no offerings for an instance that never claimed' do
+      expect(provider.discover_offerings).to be_empty
+    end
+
+    it 'filters snapshot offerings by model' do
+      activate_default_instance(%w[anthropic.claude-3-haiku-20240307-v1:0 meta.llama3-2-11b-instruct-v1:0])
+
+      filtered = provider.discover_offerings(model: 'meta.llama3-2-11b-instruct-v1:0')
+
+      expect(filtered.map(&:model)).to eq(%w[meta.llama3-2-11b-instruct-v1:0])
+    end
   end
 
-  it 'accepts canonical aliases and explicit model families for offerings' do
-    offering = provider.offering_for(model: 'claude-3-haiku', model_family: :anthropic, instance_id: :west)
-
-    expect(offering.to_h).to include(provider_family: :bedrock, instance_id: :west,
-                                     model: 'anthropic.claude-3-haiku-20240307-v1:0')
-    expect(offering.metadata).to include(model_family: :anthropic, alias: 'claude-3-haiku')
+  it 'resolves canonical aliases to versioned Bedrock model ids' do
+    expect(described_class::Provider.resolve_model_id('claude-3-haiku'))
+      .to eq('anthropic.claude-3-haiku-20240307-v1:0')
+    expect(described_class::Provider.resolve_model_id('unknown-model')).to eq('unknown-model')
   end
 
   it 'uses explicit geo prefixing independent of AWS region' do
@@ -91,40 +140,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   it 'resolves anthropic sonnet 4 alias to a versioned Bedrock model id' do
     expect(described_class::Provider.resolve_model_id('anthropic.claude-sonnet-4'))
       .to eq('anthropic.claude-sonnet-4-20250514-v1:0')
-  end
-
-  it 'uses provider instance transport and tier in offerings' do
-    configured = described_class::Provider.new(
-      bedrock_region: 'us-west-2',
-      bedrock_stub_responses: true,
-      transport: :rabbitmq,
-      tier: :fleet
-    )
-    offering = configured.offering_for(model: 'claude-3-haiku', model_family: :anthropic)
-
-    expect(offering.to_h).to include(transport: :rabbitmq, tier: :fleet)
-  end
-
-  it 'builds live offerings from ListFoundationModels summaries' do
-    allow(bedrock_client).to receive(:list_foundation_models).and_return(
-      response(
-        model_summaries: [
-          {
-            model_id: 'meta.llama3-2-11b-instruct-v1:0',
-            provider_name: 'Meta',
-            input_modalities: ['TEXT'],
-            output_modalities: ['TEXT'],
-            response_streaming_supported: true
-          }
-        ]
-      )
-    )
-
-    offerings = provider.discover_offerings(live: true, by_provider: 'Meta')
-
-    expect(Aws::Bedrock::Client).to have_received(:new).with(hash_including(region: 'us-west-2'))
-    expect(bedrock_client).to have_received(:list_foundation_models).with(by_provider: 'Meta')
-    expect(offerings.first.metadata).to include(model_family: :meta)
   end
 
   it 'reports non-live health without AWS calls' do
@@ -201,7 +216,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
         inference_config: { temperature: 0.2, max_tokens: 2048 }
       )
     )
-    expect([result.content, result.input_tokens, result.output_tokens]).to eq(['done', 3, 5])
+    expect(result).to be_a(CANONICAL::Response)
+    expect([result.text, result.usage.input_tokens, result.usage.output_tokens]).to eq(['done', 3, 5])
   end
 
   it 'renders Bedrock tool configuration for Converse' do
@@ -220,15 +236,18 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(runtime_client).to have_received(:converse).with(hash_including(tool_config: lookup_tool_config))
   end
 
-  it 'streams Converse deltas through chunks and returns an accumulated message' do
+  it 'streams Converse deltas through canonical chunks and returns a Canonical::Response' do
     stream = FakeConverseStream.new(text: 'hi', usage: { input_tokens: 1, output_tokens: 2 })
     allow(runtime_client).to receive(:converse_stream).and_yield(stream)
     chunks = []
 
     result = provider.stream(messages: [message], model: model) { |chunk| chunks << chunk }
 
-    expect(chunks.map(&:content)).to eq(%w[h i])
-    expect([result.content, result.input_tokens, result.output_tokens]).to eq(['hi', 1, 2])
+    expect(chunks.select(&:text_delta?).map(&:delta)).to eq(%w[h i])
+    expect(chunks.count(&:done?)).to eq(1)
+    expect(chunks.last).to be_done
+    expect(result).to be_a(CANONICAL::Response)
+    expect([result.text, result.usage.input_tokens, result.usage.output_tokens]).to eq(['hi', 1, 2])
   end
 
   it 'counts tokens through the Bedrock CountTokens Converse input shape' do
@@ -243,7 +262,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(result).to include(input_tokens: 7)
   end
 
-  it 'embeds through Titan InvokeModel and parses Titan embedding responses' do
+  it 'embeds through Titan InvokeModel and parses the documented embedding artifact' do
     allow(runtime_client).to receive(:invoke_model).and_return(
       response(body: StringIO.new(Legion::JSON.generate('embedding' => [0.1, 0.2], 'inputTextTokenCount' => 4)))
     )
@@ -253,7 +272,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(runtime_client).to have_received(:invoke_model).with(
       hash_including(model_id: 'amazon.titan-embed-text-v2:0', content_type: 'application/json')
     )
-    expect([embedding.vectors, embedding.input_tokens]).to eq([[0.1, 0.2], 4])
+    expect(embedding[:text]).to eq('hello')
+    expect(embedding[:model]).to eq('amazon.titan-embed-text-v2:0')
+    expect(embedding[:embedding]).to eq([0.1, 0.2])
+    expect(embedding[:usage]).to be_a(CANONICAL::Usage)
+    expect(embedding[:usage].input_tokens).to eq(4)
   end
 
   it 'does not invent a generic embedding body for non-Titan models' do
@@ -263,16 +286,17 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   describe 'model policy enforcement (compliance guard)' do
-    let(:provider) do
-      described_class::Provider.new(bedrock_region: 'us-west-2', bedrock_stub_responses: true,
-                                    model_whitelist: %w[haiku])
+    def whitelist_provider
+      @whitelist_provider ||= described_class::Provider.new(
+        bedrock_region: 'us-west-2', bedrock_stub_responses: true, model_whitelist: %w[haiku]
+      )
     end
 
     it 'fails closed in #chat for a model excluded by the whitelist, with no Bedrock call' do
       allow(runtime_client).to receive(:converse)
 
       expect do
-        provider.chat(
+        whitelist_provider.chat(
           messages: [Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hi')],
           model: 'anthropic.claude-sonnet-4-6'
         )
@@ -284,7 +308,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       allow(runtime_client).to receive(:converse_stream)
 
       expect do
-        provider.stream(
+        whitelist_provider.stream(
           messages: [Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hi')],
           model: 'anthropic.claude-sonnet-4-6'
         ) do |chunk|
@@ -297,7 +321,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     it 'fails closed in #embed for an excluded model, with no Bedrock call' do
       allow(runtime_client).to receive(:invoke_model)
 
-      expect { provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0') }
+      expect { whitelist_provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0') }
         .to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
       expect(runtime_client).not_to have_received(:invoke_model)
     end
@@ -308,7 +332,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   # The cache_control markers were removed to fix SDK union validation errors.
 
   it 'renders system blocks without cache_control' do
-    system_msg = Legion::Extensions::Llm::Message.new(role: :system, content: 'be helpful')
+    system_msg = CANONICAL::Message.build(role: :system, content: 'be helpful')
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
     )
@@ -347,11 +371,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   it 'renders message blocks without cache_control' do
     msgs = [
-      Legion::Extensions::Llm::Message.new(role: :user, content: 'msg1'),
-      Legion::Extensions::Llm::Message.new(role: :assistant, content: 'reply1'),
-      Legion::Extensions::Llm::Message.new(role: :user, content: 'msg2'),
-      Legion::Extensions::Llm::Message.new(role: :assistant, content: 'reply2'),
-      Legion::Extensions::Llm::Message.new(role: :user, content: 'msg3')
+      CANONICAL::Message.build(role: :user, content: 'msg1'),
+      CANONICAL::Message.build(role: :assistant, content: 'reply1'),
+      CANONICAL::Message.build(role: :user, content: 'msg2'),
+      CANONICAL::Message.build(role: :assistant, content: 'reply2'),
+      CANONICAL::Message.build(role: :user, content: 'msg3')
     ]
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
@@ -397,10 +421,10 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     result = provider.chat(messages: [message], model: model)
 
-    expect(result.input_tokens).to eq(100)
-    expect(result.output_tokens).to eq(50)
-    expect(result.cached_tokens).to eq(80)
-    expect(result.cache_creation_tokens).to eq(20)
+    expect(result.usage.input_tokens).to eq(100)
+    expect(result.usage.output_tokens).to eq(50)
+    expect(result.usage.cache_read_tokens).to eq(80)
+    expect(result.usage.cache_write_tokens).to eq(20)
   end
 
   it 'handles missing cache fields in converse response usage gracefully' do
@@ -413,10 +437,10 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     result = provider.chat(messages: [message], model: model)
 
-    expect(result.input_tokens).to eq(10)
-    expect(result.output_tokens).to eq(5)
-    expect(result.cached_tokens).to be_nil
-    expect(result.cache_creation_tokens).to be_nil
+    expect(result.usage.input_tokens).to eq(10)
+    expect(result.usage.output_tokens).to eq(5)
+    expect(result.usage.cache_read_tokens).to be_nil
+    expect(result.usage.cache_write_tokens).to be_nil
   end
 
   it 'parses cache metrics from streaming response metadata' do
@@ -427,8 +451,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     result = provider.stream(messages: [message], model: model)
 
-    expect(result.cached_tokens).to eq(20)
-    expect(result.cache_creation_tokens).to eq(10)
+    expect(result.usage.cache_read_tokens).to eq(20)
+    expect(result.usage.cache_write_tokens).to eq(10)
   end
 
   def response(values)

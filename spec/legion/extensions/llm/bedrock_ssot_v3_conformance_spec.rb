@@ -636,8 +636,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     let(:raw_model) { 'us.anthropic.claude-sonnet-4-6' }
 
     it 'dispatches chat with a raw string model' do
-      result = callable.chat(messages: [], model: raw_model)
-      expect(result).to be_a(Legion::Extensions::Llm::Message)
+      result = callable.chat([], model: raw_model)
+      expect(result).to be_a(Legion::Extensions::Llm::Canonical::Response)
       expect(callable.dispatch_count).to eq(1)
     end
 
@@ -652,21 +652,96 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   # messages straight to the provider callable, and the provider's lenient hash
   # re-canonicalization masked the bypass. The boundary now rejects plain Hash
   # messages LOUDLY at both the callable (strict Canonical-only) and the
-  # provider render seam (Canonical + provider-native Message only).
+  # provider dispatch seam (Canonical-only).
   describe 'dispatch boundary regression guards (live repro)' do
     let(:callable) { ssot_harness.build_callable(instance_config: ssot_harness.instance_configs.first) }
     let(:provider) { Legion::Extensions::Llm::Bedrock::Provider.new(ssot_harness.instance_configs.first) }
     let(:hash_request) { [{ role: 'user', content: 'What is the capital of France?' }] }
 
     it 'rejects plain Hash messages at the callable dispatch boundary' do
-      expect { callable.chat(messages: hash_request, model: 'us.anthropic.claude-sonnet-4-6') }
+      expect { callable.chat(hash_request, model: 'us.anthropic.claude-sonnet-4-6') }
         .to raise_error(ArgumentError, /Canonical::Message/)
     end
 
-    it 'rejects plain Hash messages at the provider render seam' do
+    it 'rejects plain Hash messages at the provider dispatch seam' do
       expect { provider.chat(messages: hash_request, model: 'us.anthropic.claude-sonnet-4-6') }
         .to raise_error(ArgumentError, /Canonical::Message/)
     end
+  end
+
+  # ─── 0.8.0 canonical boundary kit (B1/B2) ─────────────────────────────────
+  # The shared kit (09) run against the REAL callable boundary: the production
+  # BedrockCallable -> Bedrock::Provider round-trip. The AWS SDK transport is
+  # stubbed (the gem's standing pattern); the converse stream fake yields
+  # realistic wire events so the provider's real stream parser runs. Only the
+  # canonical boundary must be real — and it is (the provider classes, not a
+  # fake that returns canonical objects directly).
+  describe '0.8.0 canonical boundary (kit B1/B2)' do
+    let(:config) { ssot_harness.instance_configs.first }
+
+    let(:provider) do
+      p = Legion::Extensions::Llm::Bedrock::Provider.new(config)
+      p.instance_variable_set(:@runtime_client, stubbed_runtime_client)
+      p
+    end
+
+    let(:callable) do
+      c = ssot_harness.build_callable(instance_config: config)
+      c.instance_variable_set(:@provider, provider)
+      c
+    end
+
+    # A converse event stream that fires a text delta, usage metadata, and a
+    # stop — the handler-registration-then-fire shape of the real AWS SDK.
+    def converse_stream_fake
+      handlers = {}
+      stream = Object.new
+      stream.define_singleton_method(:method_missing) do |name, *_args, &block|
+        next super unless name.to_s.start_with?('on_')
+
+        (handlers[name] ||= []) << block
+        nil
+      end
+      stream.define_singleton_method(:respond_to_missing?) do |name, _include_private = false|
+        name.to_s.start_with?('on_')
+      end
+      stream.define_singleton_method(:fire!) do
+        (handlers[:on_content_block_delta_event] || []).each do |h|
+          h.call(Struct.new(:delta).new(Struct.new(:text).new('ok')))
+        end
+        (handlers[:on_metadata_event] || []).each do |h|
+          h.call(Struct.new(:usage).new({ input_tokens: 1, output_tokens: 2 }))
+        end
+        (handlers[:on_message_stop_event] || []).each do |h|
+          h.call(Struct.new(:stop_reason).new('end_turn'))
+        end
+      end
+      stream
+    end
+
+    # Real stubbed SDK client for the non-streaming operations; converse_stream
+    # is faked because the AWS SDK ships no canned event-stream stub.
+    def stubbed_runtime_client
+      real = Aws::BedrockRuntime::Client.new(region: 'us-east-1', stub_responses: true)
+      make_stream = method(:converse_stream_fake)
+      client = Object.new
+      client.define_singleton_method(:converse_stream) do |**_request, &block|
+        stream = make_stream.call
+        block&.call(stream)
+        stream.fire!
+        nil
+      end
+      client.define_singleton_method(:method_missing) do |name, *args, &block|
+        real.public_send(name, *args, &block)
+      end
+      client.define_singleton_method(:respond_to_missing?) do |name, include_private = false|
+        name == :converse_stream || real.respond_to?(name, include_private)
+      end
+      client
+    end
+
+    it_behaves_like 'B1 — central canonical enforcement (08 F2)'
+    it_behaves_like 'B2 — canonical outputs (05 O5, 08 R2)'
   end
 
   # ─── OfferingDraft structure ──────────────────────────────────────────────

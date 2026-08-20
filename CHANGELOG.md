@@ -9,6 +9,26 @@
 ### Added
 - **Dispatch-boundary regression guards** — The SSOT v3 conformance spec now asserts that plain-Hash messages are rejected loudly at both the callable dispatch boundary and the provider render seam, and the model-policy / streaming specs that previously fed incidental Hash messages now use canonical inputs.
 
+### 0.8.0 conformance (SSOT v4 provider wave, 2026-08-20)
+
+#### Changed
+- **Legacy types migrated to Canonical** — Every provider parse/build path now renders FROM `Canonical::Message` / `Canonical::ContentBlock` and parses TO `Canonical::Response` / `Canonical::Chunk` / `Canonical::ToolCall` / `Canonical::Usage` / `Canonical::Thinking`. The deleted legacy `Llm::Message` / `Llm::Chunk` / `Llm::ToolCall` / `Llm::Content::Raw` / `Llm::Content::ImageAttachment` constructions and the `to_provider_message` re-canonicalization bridge are gone; the provider dispatch seam enforces `Canonical::Message` only.
+- **Callable boundary is the 0.8.0 contract** — `BedrockCallable#chat` / `#stream_chat` take messages positionally, matching the base `Provider#chat` signature and the fleet `WorkerExecution` dispatch. The `enforce_canonical_messages!` calls (the one shared lex-llm helper at the exact-execution boundary) and `normalize_dispatch_error(error:)` are kept.
+- **Offering read path (07 C5)** — The legacy `Routing::ModelOffering` production chain in the provider (`discover_offerings` override, `offering_for`, `offering_from_model`, `offering_from_summary`, `build_offering`, `static_offerings` and their filter helpers) is deleted; the base `Provider#discover_offerings` serves the activated inventory offerings from `Registry.snapshot`. The discovery actor's `OfferingDraft` writer path is the sole publication path.
+- **Streaming is canonical end-to-end** — Both streaming paths (Converse events and invoke_model Anthropic events) yield `Canonical::Chunk` objects (`text_delta` / `thinking_delta` / `tool_call_delta`) and the sequence ends in exactly one `done` chunk carrying usage + stop_reason; the accumulated state builds a `Canonical::Response`. Tool-input JSON fragments travel on the `tool_call_delta` chunk and are parsed once at stream end.
+- **Sync parse boundary** — The Converse and invoke_model sync parsers delegate to the gem's canonical `Translator` (one parse boundary); the `content_filtered` / `content_filter` wire stop-reason spellings map to canonical `:content_filter` at that single edge.
+- **Embed artifact (05 §3 / O07)** — `parse_embedding_response` returns the documented Hash artifact `{ text:, model:, embedding:, usage: Canonical::Usage }` (the deleted `Llm::Embedding` type is gone).
+
+#### Removed
+- **Legacy coordinator wiring** — The `ScopedRefresher::LegacyCoordinatorAdapter` compatibility adapter (and the `scoped_refresher` require) is removed from the discovery actor's `Publisher` construction; the mixed-version window is over with the lex-llm 0.8.0 cut.
+
+#### Added
+- **Conformance kit B1/B2** — The SSOT v3 conformance spec now loads the 0.8.0 boundary kit (`ssot_contract_examples.rb`) and runs the B1 (central canonical enforcement) and B2 (canonical outputs) shared example groups against the real `BedrockCallable` -> `Bedrock::Provider` -> stubbed-AWS-SDK boundary.
+- **RULES.md** — The 0.8.0 architecture law (`references/01-rules-draft.md`, byte-for-byte) ships at the repo root.
+
+#### Dependency
+- **Floor bump** — Requires `lex-llm >= 0.8.0` (the contract cut: canonical strictification, legacy rip, provider funnel, fleet v3, conformance kit).
+
 ## [0.5.5] - 2026-08-19
 
 ### Added

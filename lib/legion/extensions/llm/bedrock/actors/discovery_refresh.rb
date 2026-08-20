@@ -17,7 +17,6 @@ require 'legion/extensions/llm/inventory/identity'
 require 'legion/extensions/llm/inventory/records'
 require 'legion/extensions/llm/inventory/evidence'
 require 'legion/extensions/llm/inventory/probe_coordinator'
-require 'legion/extensions/llm/inventory/scoped_refresher'
 require 'legion/extensions/llm/inventory/weight_reconciler'
 require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
@@ -930,10 +929,7 @@ module Legion
 
             def publisher
               @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(
-                provider_family: :bedrock,
-                compatibility_adapter: Legion::Extensions::Llm::Inventory::ScopedRefresher::LegacyCoordinatorAdapter.new(
-                  provider_family: :bedrock
-                )
+                provider_family: :bedrock
               )
             end
 

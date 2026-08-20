@@ -20,7 +20,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable do
       Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')
     ]
 
-    callable.chat(messages: messages, model: 'meta.llama3-test')
+    # The 0.8.0 callable boundary takes messages positionally (base
+    # Provider#chat / fleet WorkerExecution form).
+    callable.chat(messages, model: 'meta.llama3-test')
 
     expect(runtime_client).to have_received(:converse).with(
       hash_including(system: [{ text: 'D14 system' }])

@@ -22,8 +22,8 @@ module Legion
               thinking_obj = if thinking_text.to_s.empty?
                                nil
                              else
-                               Canonical::Thinking.new(content: thinking_text.to_s,
-                                                       signature: nil)
+                               Canonical::Thinking.build(content: thinking_text.to_s,
+                                                         signature: nil)
                              end
 
               Canonical::Response.build(
@@ -137,7 +137,7 @@ module Legion
               thinking_parts = Array(content).select { |b| b['type'] == 'thinking' }
               thinking_obj = if thinking_parts.any?
                                tp = thinking_parts.last
-                               Canonical::Thinking.new(content: tp['thinking'], signature: tp['signature'])
+                               Canonical::Thinking.build(content: tp['thinking'], signature: tp['signature'])
                              end
 
               tool_calls_list = Array(content).select { |b| b['type'] == 'tool_use' }.map do |b|

@@ -3,11 +3,14 @@
 require 'spec_helper'
 require 'legion/extensions/llm/bedrock/provider'
 
-# Path B regression specs: chunks must be yielded to the caller's block from
-# both bedrock streaming paths. Fake event streams register handlers and fire
+# Path B regression specs: canonical chunks must be yielded to the caller's
+# block from both bedrock streaming paths, and the accumulated state must
+# build a Canonical::Response. Fake event streams register handlers and fire
 # them after registration returns, exactly like the AWS SDK does mid-call.
 RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
   subject(:provider) { described_class.allocate }
+
+  let(:canonical) { Legion::Extensions::Llm::Canonical }
 
   # Minimal stand-in for Aws::BedrockRuntime::EventStreams::*
   let(:fake_stream_class) do
@@ -32,7 +35,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
   end
 
   describe '#stream_converse' do
-    it 'yields text delta chunks to the block' do
+    it 'yields canonical text delta chunks and ends in a done chunk' do
       fake = fake_stream_class.new
       client = Object.new
       client.define_singleton_method(:converse_stream) do |**_request, &block|
@@ -44,10 +47,15 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       provider.define_singleton_method(:runtime_client) { client }
 
       chunks = []
-      message = provider.send(:stream_converse, { messages: [] }, 'claude-x') { |chunk| chunks << chunk }
+      response = provider.send(:stream_converse, { messages: [] }, 'claude-x') { |chunk| chunks << chunk }
 
-      expect(chunks.map { |c| c.content.to_s }).to eq(['Hello'])
-      expect(message.content).to eq('Hello')
+      expect(chunks).to all(be_a(canonical::Chunk))
+      expect(chunks.select(&:text_delta?).map(&:delta)).to eq(['Hello'])
+      expect(chunks.count(&:done?)).to eq(1)
+      expect(chunks.last).to be_done
+      expect(chunks.last.stop_reason).to eq(:end_turn)
+      expect(response).to be_a(canonical::Response)
+      expect(response.text).to eq('Hello')
     end
 
     it 'extracts text from reasoning deltas without raising' do
@@ -62,11 +70,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       end
       provider.define_singleton_method(:runtime_client) { client }
 
-      message = nil
+      response = nil
       expect do
-        message = provider.send(:stream_converse, { messages: [] }, 'claude-x') { |_c| nil }
+        response = provider.send(:stream_converse, { messages: [] }, 'claude-x') { |_c| nil }
       end.not_to raise_error
-      expect(message.thinking.to_s).to include('pondering')
+      expect(response).to be_a(canonical::Response)
+      expect(response.thinking.content).to include('pondering')
     end
   end
 
@@ -86,7 +95,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       provider.define_singleton_method(:config) { Struct.new(:bearer_token).new(nil) }
     end
 
-    it 'yields text delta chunks to the block' do
+    it 'yields canonical text delta chunks and ends in a done chunk' do
       fake = fake_stream_class.new
       payload = events.map { |event| Legion::JSON.dump(event) }.join("\n")
       client = Object.new
@@ -97,15 +106,21 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       provider.define_singleton_method(:runtime_client) { client }
 
       chunks = []
-      message = provider.send(
+      response = provider.send(
         :invoke_model_stream,
-        messages: [Legion::Extensions::Llm::Message.new(role: :user, content: 'hi')],
+        messages: [canonical::Message.build(role: :user, content: 'hi')],
         model: 'anthropic.claude-sonnet-4-20250514-v1:0',
         temperature: nil, max_tokens: 100, tools: {}, tool_prefs: nil, thinking: nil
       ) { |chunk| chunks << chunk }
 
-      expect(chunks.map { |c| c.content.to_s }).to eq(['Hello', ' world'])
-      expect(message.content).to eq('Hello world')
+      expect(chunks).to all(be_a(canonical::Chunk))
+      expect(chunks.select(&:text_delta?).map(&:delta)).to eq(['Hello', ' world'])
+      expect(chunks.count(&:done?)).to eq(1)
+      expect(chunks.last).to be_done
+      expect(response).to be_a(canonical::Response)
+      expect(response.text).to eq('Hello world')
+      expect(response.usage.input_tokens).to eq(5)
+      expect(response.stop_reason).to eq(:end_turn)
     end
 
     it 're-raises handler errors instead of swallowing them' do

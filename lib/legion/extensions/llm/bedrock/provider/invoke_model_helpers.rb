@@ -10,6 +10,10 @@ module Legion
           # Native invoke_model (Anthropic Messages API payload) path used for
           # thinking-enabled and tool-call requests on Anthropic models where the
           # Converse API silently drops the required fields.
+          #
+          # 0.8.0 renderer/parser law (08 R1-R4): render FROM canonical values;
+          # parse TO canonical types. Dialect tolerance (Anthropic event wire)
+          # lives in these helpers only.
           module InvokeModelHelpers
             private
 
@@ -47,7 +51,7 @@ module Legion
             end
 
             def invoke_model_stream(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:,
-                                    thinking:, _params: nil, **_rest, &)
+                                    thinking:, params: {}, **_rest, &)
               mid = model_id(model)
               body = build_invoke_model_body(
                 messages: messages, model: mid, temperature: temperature, max_tokens: max_tokens,
@@ -55,8 +59,10 @@ module Legion
               )
               log.debug { "bedrock.provider.invoke_model_stream: model=#{mid} thinking=#{thinking.inspect}" }
 
+              request_id = params.is_a?(::Hash) ? params[:request_id] : nil
               state = { accumulated: +'', thinking: +'', final_usage: nil, stop_reason: nil,
-                        tool_use_blocks: [], current_tool_use: nil, in_thinking: false, raw_events: [] }
+                        tool_use_blocks: [], current_tool_use: nil, in_thinking: false,
+                        raw_events: [], request_id: request_id }
 
               dump_path = ENV.fetch('BEDROCK_DEBUG_OUTPUT', nil)
 
@@ -66,30 +72,16 @@ module Legion
                 accept: 'application/json',
                 body: Legion::JSON.generate(body)
               ) do |stream|
-                wire_invoke_model_response_stream(stream, state, mid, dump_path, &)
+                wire_invoke_model_response_stream(stream, state, dump_path, &)
               end
 
               dump_invoke_model_stream_events(state[:raw_events], dump_path)
 
-              usage = state[:final_usage] || {}
-              msg_attrs = {
-                role: :assistant,
-                content: state[:accumulated],
-                model_id: mid,
-                tool_calls: build_stream_tool_calls(state[:tool_use_blocks]),
-                input_tokens: usage.fetch(:input_tokens, 0) || usage.fetch('input_tokens', 0),
-                output_tokens: usage.fetch(:output_tokens, 0) || usage.fetch('output_tokens', 0),
-                cached_tokens: usage.fetch(:cache_read_input_tokens, nil) ||
-                               usage.fetch('cache_read_input_tokens', nil),
-                cache_creation_tokens: usage.fetch(:cache_creation_input_tokens, nil) ||
-                                       usage.fetch('cache_creation_input_tokens', nil),
-                stop_reason: state[:stop_reason]
-              }
-              msg_attrs[:thinking] = state[:thinking] unless state[:thinking].empty?
-              Legion::Extensions::Llm::Message.new(**msg_attrs)
+              yield done_chunk(state, request_id: state[:request_id]) if block_given?
+              build_stream_response(state, mid)
             end
 
-            def wire_invoke_model_response_stream(stream, state, mid, dump_path, &)
+            def wire_invoke_model_response_stream(stream, state, dump_path, &)
               stream.on_chunk_event do |event|
                 raw = event.respond_to?(:bytes) ? event.bytes : nil
                 raw = raw.read if raw.respond_to?(:read)
@@ -105,7 +97,7 @@ module Legion
                   next unless raw_event.is_a?(Hash)
 
                   state[:raw_events] << { event: raw_event['type'] || 'unknown', data: raw_event } if dump_path
-                  handle_invoke_model_stream_json(raw_event, state, mid, &)
+                  handle_invoke_model_stream_json(raw_event, state, &)
                 end
               rescue Legion::JSON::ParseError => e
                 handle_exception(e, level: :warn, handled: true,
@@ -164,8 +156,7 @@ module Legion
               messages.each do |msg|
                 next unless msg.role.to_s == 'system'
 
-                content = msg.content
-                text = content.is_a?(Array) ? content.filter_map { |b| b[:text] || b['text'] }.join("\n") : content.to_s
+                text = canonical_content_text(msg.content, joiner: "\n")
                 parts << text unless text.empty?
               end
               return nil if parts.empty?
@@ -213,44 +204,59 @@ module Legion
               content = msg.content
               return [] if content.nil?
 
-              if content.is_a?(String)
+              case content
+              when ::String
                 [{ type: 'text', text: content }]
-              elsif content.is_a?(Array)
-                content.filter_map do |block|
-                  type = (block[:type] || block['type']).to_s
-                  next { type: 'text', text: block[:text] || block['text'] } if type == 'text'
-
-                  block
-                end
+              when ::Array
+                content.filter_map { |block| invoke_user_content_block(block) }
+              when Canonical::ContentBlock
+                block = invoke_user_content_block(content)
+                block ? [block] : []
               else
                 [{ type: 'text', text: content.to_s }]
               end
             end
 
+            # One Anthropic-wire user-content block from a canonical block:
+            # text and image render; other block types have no Anthropic
+            # user-content spelling and do not render.
+            def invoke_user_content_block(block)
+              return nil unless block.is_a?(Canonical::ContentBlock)
+
+              if block.text?
+                text = block.text.to_s
+                return nil if text.strip.empty?
+
+                { type: 'text', text: text }
+              elsif block.type == :image
+                {
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: block.media_type,
+                    data: block.data
+                  }
+                }
+              end
+            end
+
             def format_invoke_model_tool_result(msg)
               tool_call_id = msg.tool_call_id
-              content = msg.tool_results.to_s
+              content = msg.text.to_s
               [{ type: 'tool_result', tool_use_id: tool_call_id, content: [{ type: 'text', text: content }] }]
             end
 
             def format_invoke_model_assistant(msg)
               blocks = []
-              text = msg.content
-              blocks << { type: 'text', text: text.to_s } unless text.to_s.strip.empty?
+              text = msg.text.to_s
+              blocks << { type: 'text', text: text } unless text.strip.empty?
 
-              tool_calls = msg.tool_calls
-              call_array = tool_calls.is_a?(Hash) ? tool_calls.values : Array(tool_calls)
-
-              call_array.each do |call|
+              Array(msg.tool_calls).each do |call|
                 blocks << {
                   type: 'tool_use',
-                  id: call.respond_to?(:id) ? call.id : call[:id] || call['id'],
-                  name: call.respond_to?(:name) ? call.name : call[:name] || call['name'],
-                  input: if call.respond_to?(:arguments)
-                           call.arguments
-                         else
-                           call[:arguments] || call['arguments'] || {}
-                         end
+                  id: call.id,
+                  name: call.name,
+                  input: call.arguments || {}
                 }
               end
               blocks
@@ -293,35 +299,14 @@ module Legion
               build_invoke_model_message(body, mid)
             end
 
+            # 08 R2: the single sync parse boundary — the gem's canonical
+            # translator (ResponseParsing) turns the wire hash into
+            # Canonical::Response.
             def build_invoke_model_message(body, mid)
-              content_blocks = body['content'] || []
-
-              text_parts    = content_blocks.filter_map { |b| b['text'] if b['type'] == 'text' }.join
-              thinking_text = content_blocks.filter_map { |b| b['thinking'] if b['type'] == 'thinking' }.join
-              tool_calls_raw = content_blocks.select { |b| b['type'] == 'tool_use' }
-
-              tc = tool_calls_raw.to_h do |tc_block|
-                [tc_block['id'], Legion::Extensions::Llm::ToolCall.new(
-                  id: tc_block['id'], name: tc_block['name'], arguments: tc_block['input'] || {}
-                )]
-              end
-
-              usage = body['usage'] || {}
-              msg_attrs = {
-                role: :assistant,
-                content: text_parts,
-                model_id: mid,
-                tool_calls: tc.empty? ? nil : tc,
-                input_tokens: usage['input_tokens'] || 0,
-                output_tokens: usage['output_tokens'] || 0,
-                cached_tokens: usage['cache_read_input_tokens'],
-                cache_creation_tokens: usage['cache_creation_input_tokens']
-              }
-              msg_attrs[:thinking] = thinking_text unless thinking_text.empty?
-              Legion::Extensions::Llm::Message.new(**msg_attrs)
+              translator.parse_response(body, model: mid)
             end
 
-            def handle_invoke_model_stream_json(event_json, state, model_id)
+            def handle_invoke_model_stream_json(event_json, state)
               case event_json['type']
               when 'message_start'
                 state[:final_usage] = (event_json['message'] || {})['usage'] || {}
@@ -335,7 +320,7 @@ module Legion
                   state[:in_thinking] = false
                 end
               when 'content_block_delta'
-                handle_invoke_model_delta(event_json['delta'] || {}, state, model_id) { |c| yield c if block_given? }
+                handle_invoke_model_delta(event_json['delta'] || {}, state) { |c| yield c if block_given? }
               when 'content_block_stop'
                 if state[:current_tool_use]
                   state[:tool_use_blocks] << state[:current_tool_use]
@@ -350,38 +335,31 @@ module Legion
               raise
             end
 
-            def handle_invoke_model_delta(delta, state, model_id)
+            def handle_invoke_model_delta(delta, state)
+              request_id = state[:request_id]
               case delta['type'].to_s
               when 'thinking_delta'
                 text = delta['thinking'] || ''
                 state[:thinking] << text
-                if block_given? && !text.empty?
-                  yield Legion::Extensions::Llm::Chunk.new(
-                    role: :assistant, content: '', model_id: model_id,
-                    thinking: { content: text, enabled: true }
-                  )
-                end
+                yield Canonical::Chunk.thinking_delta(delta: text, request_id:) if block_given? && !text.empty?
               when 'text_delta'
                 text = delta['text'] || ''
                 state[:accumulated] << text
-                if block_given?
-                  yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
-                                                           model_id: model_id)
-                end
+                yield Canonical::Chunk.text_delta(delta: text, request_id:) if block_given?
               when 'input_json_delta'
                 partial = delta['partial_json'] || ''
                 state[:current_tool_use][:input_json] << partial
                 if block_given? && !partial.empty? && state[:current_tool_use]
-                  yield Legion::Extensions::Llm::Chunk.new(
-                    role: :assistant, content: '', model_id: model_id,
-                    tool_calls: {
-                      state[:current_tool_use][:tool_use_id].to_sym =>
-                        Legion::Extensions::Llm::ToolCall.new(
-                          id: state[:current_tool_use][:tool_use_id],
-                          name: state[:current_tool_use][:name],
-                          arguments: partial
-                        )
-                    }
+                  # Canonical chunk fragment law: the wire fragment (String
+                  # arguments) travels on the chunk; the assembled JSON is
+                  # parsed once, at stream end (10 U2).
+                  yield Canonical::Chunk.tool_call_delta(
+                    tool_call: {
+                      id: state[:current_tool_use][:tool_use_id],
+                      name: state[:current_tool_use][:name],
+                      arguments: partial
+                    },
+                    request_id:
                   )
                 end
               end

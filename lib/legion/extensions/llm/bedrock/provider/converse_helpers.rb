@@ -6,6 +6,11 @@ module Legion
       module Bedrock
         class Provider
           # Converse API request formatting, response parsing, and stream handling.
+          #
+          # 0.8.0 renderer/parser law (08 R1-R4): render FROM Canonical::Message /
+          # Canonical::ContentBlock values; parse TO Canonical::Response /
+          # Canonical::Chunk. Wire-dialect tolerance (provider-spelled keys,
+          # MIME media types) lives in these renderers only.
           module ConverseHelpers
             private
 
@@ -52,12 +57,12 @@ module Legion
             end
 
             def tool_result_blocks(message)
-              return [] unless message.tool_result?
+              return [] if message.tool_call_id.nil?
 
               [{
                 tool_result: {
                   tool_use_id: message.tool_call_id,
-                  content: [{ text: message.tool_results.to_s }]
+                  content: [{ text: message.text.to_s }]
                 }
               }]
             end
@@ -74,7 +79,7 @@ module Legion
 
             def format_system(messages)
               system_messages = messages.select { |message| message.role == :system }
-              system_text = system_messages.map { |message| content_text(message.content) }
+              system_text = system_messages.map { |message| message.text.to_s }
               system_blocks(system_text.join("\n"))
             end
 
@@ -91,18 +96,18 @@ module Legion
             def build_content_blocks(message)
               return tool_result_blocks(message) if message.role == :tool
 
-              return assistant_tool_use_blocks(message) if message.role == :assistant && message.tool_call?
+              return assistant_tool_use_blocks(message) if message.role == :assistant &&
+                                                           message.tool_calls && !message.tool_calls.empty?
 
               content_blocks(message.content)
             end
 
             def assistant_tool_use_blocks(message)
               blocks = []
-              text = content_text(message.content)
+              text = message.text.to_s
               blocks << { text: text } if text && !text.strip.empty?
 
-              calls = message.tool_calls.is_a?(Hash) ? message.tool_calls.values : Array(message.tool_calls)
-              calls.each do |call|
+              Array(message.tool_calls).each do |call|
                 blocks << {
                   tool_use: {
                     tool_use_id: call.id,
@@ -115,58 +120,57 @@ module Legion
             end
 
             def content_blocks(content)
-              raw = raw_content(content)
-              return raw if raw
+              case content
+              when ::String
+                return [] if content.strip.empty?
 
-              return image_blocks(content) if content.respond_to?(:attachments) && !content.attachments.empty?
+                [{ text: content }]
+              when Canonical::ContentBlock
+                wire = content_block_wire(content)
+                wire ? [wire] : []
+              when ::Array
+                content.filter_map { |block| content_block_wire(block) }
+              else
+                text = content.to_s
+                return [] if text.strip.empty?
 
-              text = content_text(content)
-              return [] if text.strip.empty?
-
-              [{ text: text }]
-            end
-
-            def image_blocks(content)
-              blocks = []
-              text = content_text(content)
-              blocks << { text: text } if text.strip.present?
-
-              content.attachments.each do |attachment|
-                if attachment.is_a?(Legion::Extensions::Llm::Content::ImageAttachment)
-                  blocks << format_image_attachment(attachment)
-                end
+                [{ text: text }]
               end
-              blocks
             end
 
-            def format_image_attachment(attachment)
+            # One Converse user-content block from a canonical block: text and
+            # image render to the wire; other block types have no Bedrock
+            # user-content spelling and do not render.
+            def content_block_wire(block)
+              return nil unless block.is_a?(Canonical::ContentBlock)
+
+              if block.text?
+                text = block.text.to_s
+                return nil if text.strip.empty?
+
+                { text: text }
+              elsif block.type == :image
+                format_image_block(block)
+              end
+            end
+
+            def format_image_block(block)
               {
                 image: {
-                  format: image_format(attachment.format),
-                  source: { bytes: attachment.data }
+                  format: image_format(block.media_type),
+                  source: { bytes: block.data }
                 }
               }
             end
 
             def image_format(fmt)
-              case fmt.to_s.downcase
+              mime = fmt.to_s.downcase.delete_prefix('image/')
+              case mime
               when 'jpeg', 'jpg' then 'jpeg'
               when 'png' then 'png'
               when 'gif' then 'gif'
               when 'webp' then 'webp'
               end || 'jpeg'
-            end
-
-            def raw_content(content)
-              return nil unless content.is_a?(Legion::Extensions::Llm::Content::Raw)
-
-              Array(content.format)
-            end
-
-            def content_text(content)
-              return content.text.to_s if content.respond_to?(:text)
-
-              content.to_s
             end
 
             def format_tool_config(tools, tool_prefs)
@@ -225,88 +229,11 @@ module Legion
               (tool_prefs[:choice] || tool_prefs['choice'] || 'unspecified').to_s
             end
 
+            # 08 R2: the single sync parse boundary — the gem's canonical
+            # translator (ResponseParsing) turns the wire hash into
+            # Canonical::Response.
             def parse_converse_response(response, fallback_model)
-              output = value(response, :output)
-              message = value(output, :message)
-              content_blocks = value(message, :content)
-              usage = value(response, :usage) || {}
-              additional_fields = value(response, :additional_model_response_fields)
-
-              msg_attrs = {
-                role: :assistant,
-                content: text_from(content_blocks),
-                model_id: fallback_model,
-                tool_calls: parse_tool_calls(content_blocks),
-                input_tokens: value(usage, :input_tokens),
-                output_tokens: value(usage, :output_tokens),
-                cached_tokens: cache_read_tokens(usage),
-                cache_creation_tokens: cache_write_tokens(usage),
-                raw: normalize_response(response)
-              }
-
-              thinking_text = extract_thinking_from_content(content_blocks) ||
-                              (additional_fields ? extract_thinking_from_fields(additional_fields) : nil)
-              msg_attrs[:thinking] = thinking_text if thinking_text
-
-              Legion::Extensions::Llm::Message.new(**msg_attrs)
-            end
-
-            def extract_thinking_from_content(content_blocks)
-              return nil unless content_blocks
-
-              Array(content_blocks).each do |block|
-                reasoning = value(block, :reasoning)
-                next if reasoning.nil?
-
-                text = if reasoning.is_a?(Hash)
-                         reasoning[:text] || reasoning['text']
-                       else
-                         value(reasoning, :text)
-                       end
-                return text.to_s unless text.to_s.empty?
-              end
-              nil
-            end
-
-            def extract_thinking_from_fields(additional_fields)
-              thinking = additional_fields[:thinking] || additional_fields['thinking']
-              return nil unless thinking.is_a?(Hash)
-
-              content = thinking[:text] || thinking['text'] ||
-                        thinking[:reasoning_text] || thinking['reasoningText'] ||
-                        thinking[:reasoning] || thinking['reasoning'] ||
-                        reasoning_content_text(thinking)
-              content.to_s unless content.to_s.empty?
-            end
-
-            def reasoning_content_text(thinking)
-              rc = thinking[:reasoningContent] || thinking['reasoningContent']
-              return nil unless rc.is_a?(Hash)
-
-              chunk = rc[:chunk] || rc['chunk']
-              if chunk.is_a?(Hash)
-                chunk[:text] || chunk['text']
-              else
-                rc[:text] || rc['text']
-              end
-            end
-
-            def text_from(content)
-              Array(content).filter_map { |block| value(block, :text) }.join
-            end
-
-            def parse_tool_calls(content)
-              calls = Array(content).filter_map { |block| value(block, :tool_use) }
-              return nil if calls.empty?
-
-              calls.to_h do |call|
-                name = value(call, :name)
-                [
-                  value(call, :tool_use_id) || name,
-                  Legion::Extensions::Llm::ToolCall.new(id: value(call, :tool_use_id) || name, name: name,
-                                                        arguments: value(call, :input) || {})
-                ]
-              end
+              translator.parse_response(normalize_response(response), model: fallback_model)
             end
 
             def cache_read_tokens(usage)
@@ -321,7 +248,27 @@ module Legion
               value(usage, :cache_creation_input_tokens) || value(usage, 'cache_creation_input_tokens')
             end
 
-            def stream_converse(request, fallback_model)
+            # Canonical usage from a wire usage hash/struct (provider spellings
+            # translated at this edge, 13 §3).
+            def usage_from(usage)
+              Canonical::Usage.build(
+                input_tokens: value(usage, :input_tokens),
+                output_tokens: value(usage, :output_tokens),
+                cache_read_tokens: cache_read_tokens(usage),
+                cache_write_tokens: cache_write_tokens(usage)
+              )
+            end
+
+            # One stop-reason edge: the gem's Translator map is the single
+            # wire→canonical spelling table (D04). Unknown spellings pass
+            # through as symbols and fail loud in Canonical::Response.
+            def map_stop_reason(raw)
+              return nil if raw.nil? || raw.to_s.empty?
+
+              Legion::Extensions::Llm::Bedrock::Translator::STOP_REASON_MAP.fetch(raw.to_s, raw.to_sym)
+            end
+
+            def stream_converse(request, fallback_model, request_id: nil, &)
               state = { accumulated: +'', thinking: +'', final_usage: nil, stop_reason: nil,
                         tool_use_blocks: [], current_tool_use: nil, in_thinking: false,
                         raw_events: [] }
@@ -334,7 +281,7 @@ module Legion
               dump_path = ENV.fetch('BEDROCK_DEBUG_OUTPUT', nil)
 
               runtime_client.converse_stream(**request) do |stream|
-                wire_stream_handlers(stream, state, fallback_model) { |chunk| yield chunk if block_given? }
+                wire_stream_handlers(stream, state, request_id:, &)
 
                 next unless dump_path
 
@@ -367,7 +314,16 @@ module Legion
                   "tool_use_blocks=#{state[:tool_use_blocks].size} stop_reason=#{state[:stop_reason]}"
               end
 
-              build_stream_message(state, fallback_model)
+              yield done_chunk(state, request_id:) if block_given?
+              build_stream_response(state, fallback_model)
+            end
+
+            def done_chunk(state, request_id:)
+              Canonical::Chunk.done(
+                request_id:,
+                usage: usage_from(state[:final_usage]),
+                stop_reason: map_stop_reason(state[:stop_reason])
+              )
             end
 
             def dump_stream_events(events, dump_path, prefix)
@@ -379,25 +335,21 @@ module Legion
                                   operation: 'bedrock.provider.dump_stream_events')
             end
 
-            def build_stream_message(state, fallback_model)
-              msg_attrs = {
-                role: :assistant,
-                content: state[:accumulated],
-                model_id: fallback_model,
+            # 08 R2: the stream's accumulated state builds a Canonical::Response.
+            def build_stream_response(state, fallback_model)
+              Canonical::Response.build(
+                text: state[:accumulated],
+                thinking: state[:thinking].empty? ? nil : Canonical::Thinking.build(content: state[:thinking]),
                 tool_calls: build_stream_tool_calls(state[:tool_use_blocks]),
-                input_tokens: value(state[:final_usage], :input_tokens),
-                output_tokens: value(state[:final_usage], :output_tokens),
-                cached_tokens: cache_read_tokens(state[:final_usage]),
-                cache_creation_tokens: cache_write_tokens(state[:final_usage]),
-                stop_reason: state[:stop_reason]
-              }
-              msg_attrs[:thinking] = state[:thinking] unless state[:thinking].empty?
-              Legion::Extensions::Llm::Message.new(**msg_attrs)
+                usage: usage_from(state[:final_usage]),
+                stop_reason: map_stop_reason(state[:stop_reason]),
+                model: fallback_model
+              )
             end
 
-            def wire_stream_handlers(stream, state, fallback_model, &)
+            def wire_stream_handlers(stream, state, request_id:, &)
               wire_block_start(stream, state)
-              wire_block_delta(stream, state, fallback_model, &)
+              wire_block_delta(stream, state, request_id:, &)
               wire_block_stop(stream, state)
               wire_message_stop(stream, state)
               stream.on_metadata_event { |event| state[:final_usage] = value(event, :usage) }
@@ -426,7 +378,7 @@ module Legion
               end
             end
 
-            def wire_block_delta(stream, state, fallback_model)
+            def wire_block_delta(stream, state, request_id:)
               stream.on_content_block_delta_event do |event|
                 delta = value(event, :delta)
                 text = value(delta, :text) ||
@@ -437,10 +389,7 @@ module Legion
                     state[:thinking] << text
                   else
                     state[:accumulated] << text
-                    if block_given?
-                      yield Legion::Extensions::Llm::Chunk.new(role: :assistant, content: text,
-                                                               model_id: fallback_model)
-                    end
+                    yield Canonical::Chunk.text_delta(delta: text, request_id:) if block_given?
                   end
                 end
 
@@ -471,10 +420,12 @@ module Legion
               end
             end
 
+            # Streamed tool-input JSON fragments assemble before parsing (10 U2):
+            # one shared parse, invalid JSON is a logged contract violation.
             def build_stream_tool_calls(tool_use_blocks)
-              return nil if tool_use_blocks.empty?
+              return [] if tool_use_blocks.empty?
 
-              tool_use_blocks.to_h do |block|
+              tool_use_blocks.map do |block|
                 input = begin
                   Legion::JSON.load(block[:input_json])
                 rescue Legion::JSON::ParseError => e
@@ -484,7 +435,7 @@ module Legion
                 end
                 name = block[:name]
                 id = block[:tool_use_id] || name
-                [id, Legion::Extensions::Llm::ToolCall.new(id: id, name: name, arguments: input)]
+                Canonical::ToolCall.build(id: id, name: name, arguments: input)
               end
             end
 
@@ -497,6 +448,19 @@ module Legion
                 else
                   result << msg
                 end
+              end
+            end
+
+            # Plain text from canonical content (String | ContentBlock |
+            # Array<ContentBlock>) — one text extraction for both render paths.
+            def canonical_content_text(content, joiner: '')
+              case content
+              when ::String then content
+              when Canonical::ContentBlock then content.text.to_s
+              when ::Array
+                content.filter_map { |b| b.is_a?(Canonical::ContentBlock) ? b.text.to_s : nil }.join(joiner)
+              else
+                content.to_s
               end
             end
           end

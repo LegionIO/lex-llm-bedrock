@@ -30,12 +30,17 @@ module Legion
 
           DEFAULT_MAX_TOKENS = 4096
 
+          # Wire spelling table (13 §3 edge): the Converse API spells the
+          # content-filter stop reason 'content_filtered'; Anthropic event
+          # streams spell it 'content_filter'. Both map to the canonical
+          # :content_filter (Canonical::Response::STOP_REASONS).
           STOP_REASON_MAP = {
             'end_turn' => :end_turn,
             'tool_use' => :tool_use,
             'max_tokens' => :max_tokens,
             'stop_sequence' => :stop_sequence,
             'content_filter' => :content_filter,
+            'content_filtered' => :content_filter,
             'guardrail_intervened' => :content_filter,
             'error' => :error
           }.freeze

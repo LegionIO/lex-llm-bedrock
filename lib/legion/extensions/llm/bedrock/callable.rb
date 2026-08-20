@@ -45,7 +45,10 @@ module Legion
               @logger.debug { '[bedrock][callable] disconnected' }
             end
 
-            def chat(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
+            # The 0.8.0 callable boundary takes messages positionally, matching
+            # the base Provider#chat signature and the fleet WorkerExecution
+            # dispatch (both call `callable.chat(messages, model:, **params)`).
+            def chat(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
                      thinking: nil, params: {}, **opts)
               dispatch! do
                 # Canonical boundary (N x N law): pipeline dispatch delivers
@@ -57,7 +60,7 @@ module Legion
               end
             end
 
-            def stream_chat(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
+            def stream_chat(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil,
                             thinking: nil, params: {}, **opts, &)
               dispatch! do
                 provider.enforce_canonical_messages!(messages)

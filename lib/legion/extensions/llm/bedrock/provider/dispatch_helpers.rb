@@ -20,7 +20,7 @@ module Legion
               thinking: nil,
               **opts
             )
-              messages = build_provider_messages(messages)
+              enforce_canonical_messages!(messages)
               # Passthrough request params that do not map to an explicit
               # keyword reach the Converse payload, never silently dropped.
               params = params.merge(opts)
@@ -47,7 +47,7 @@ module Legion
 
             def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
                        thinking: nil, **opts, &)
-              messages = build_provider_messages(messages)
+              enforce_canonical_messages!(messages)
               # Passthrough request params that do not map to an explicit
               # keyword reach the Converse payload, never silently dropped.
               params = params.merge(opts)
@@ -73,14 +73,14 @@ module Legion
               log.debug { "bedrock.provider.stream: thinking_config=#{thinking_config.inspect}" } if thinking_config
 
               start_time = Time.now
-              result = stream_converse(request, model_id(model), &)
+              result = stream_converse(request, model_id(model), request_id: params[:request_id], &)
               elapsed = ((Time.now - start_time) * 1000).round
               log.debug { "bedrock.provider.stream: completed model=#{model_id(model)} elapsed_ms=#{elapsed}" }
               result
             end
 
             def count_tokens(messages:, model:, system: nil, params: {}, **opts)
-              messages = build_provider_messages(messages)
+              enforce_canonical_messages!(messages)
               # Passthrough request params that do not map to an explicit
               # keyword reach the CountTokens payload, never silently dropped.
               params = params.merge(opts)
@@ -117,57 +117,28 @@ module Legion
                 accept: 'application/json',
                 body: Legion::JSON.generate(body)
               )
-              parse_embedding_response(response, model: mid)
+              parse_embedding_response(response, model: mid, text: text)
             end
 
             # The nameless ** accepts and ignores HTTP-style kwargs the base
             # contract carries (headers:) — Bedrock transport is the AWS SDK,
             # which owns its own request signing.
-            def complete(messages, tools:, temperature:, model:, params: {}, schema: nil,
+            def complete(messages, tools:, model:, params: {}, schema: nil,
                          thinking: nil, tool_prefs: nil, **, &)
-              payload = params.dup
+              payload = params.is_a?(::Hash) ? params.dup : {}
               payload[:additional_model_request_fields] ||= {}
               payload[:additional_model_request_fields][:response_format] = schema if schema
 
               if block_given?
-                stream(messages:, model:, temperature:, tools:, tool_prefs:, params: payload, thinking:, &)
+                stream(messages: messages, model: model, temperature: nil, max_tokens: nil,
+                       tools: tools, tool_prefs: tool_prefs, params: payload, thinking: thinking, &)
               else
-                chat(messages:, model:, temperature:, tools:, tool_prefs:, params: payload, thinking:)
+                chat(messages: messages, model: model, temperature: nil, max_tokens: nil,
+                     tools: tools, tool_prefs: tool_prefs, params: payload, thinking: thinking)
               end
             end
 
             private
-
-            # Canonical boundary (N x N law): pipeline dispatch delivers
-            # Canonical::Message objects; the provider-native Chat facade
-            # delivers lex-llm Message. Both are object shapes this spoke
-            # normalizes to its native Message before any wire formatting.
-            # Plain Hashes are the bypass class (the 2026-08-19 incident) —
-            # reject loudly, never silently re-canonicalize.
-            def build_provider_messages(messages)
-              messages.map do |message|
-                next message if message.is_a?(Legion::Extensions::Llm::Message)
-                next to_provider_message(message) if message.is_a?(Legion::Extensions::Llm::Canonical::Message)
-
-                raise ArgumentError,
-                      "bedrock provider input must be Canonical::Message objects, got #{message.class} — " \
-                      'non-canonical message shapes must not cross the dispatch boundary'
-              end
-            end
-
-            # Provider-native Message from a Canonical::Message. The converse
-            # and invoke_model formatters read the native Message API
-            # (tool_call?/tool_result?/tool_results), so the canonical object is
-            # projected onto it. Wire shape is unchanged — only the in-memory
-            # message representation differs from the raw canonical input.
-            def to_provider_message(canonical)
-              Legion::Extensions::Llm::Message.new(
-                role: canonical.role,
-                content: canonical.content,
-                tool_calls: canonical.tool_calls,
-                tool_call_id: canonical.tool_call_id
-              )
-            end
 
             def log_chat_request(request, model, tools, params, tool_prefs)
               log.debug do
