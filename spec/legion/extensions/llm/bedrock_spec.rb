@@ -148,7 +148,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   it 'returns Model::Info from list_models with capabilities from modalities' do
-    stub_registry_publisher
     allow(bedrock_client).to receive(:list_foundation_models).and_return(
       response(
         model_summaries: [
@@ -185,7 +184,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(embed_model.modalities_output).to include(:embedding)
   end
 
-  it 'builds sanitized lex-llm registry events for Bedrock model availability' do
+  it 'does not ship a registry_publisher class method (SSOT v3: single publication path via DiscoveryRefresh)' do
+    expect(described_class::Provider).not_to respond_to(:registry_publisher)
+  end
+
+  it 'builds sanitized lex-llm registry events via the base RegistryEventBuilder' do
     model_info = Legion::Extensions::Llm::Model::Info.new(
       id: 'anthropic.claude-3-haiku-20240307-v1:0',
       name: 'claude-3-haiku',
@@ -194,11 +197,14 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       modalities_input: %w[text image],
       modalities_output: %w[text]
     )
-    events = capture_registry_events([model_info], readiness: { ready: true })
+    builder = Legion::Extensions::Llm::RegistryEventBuilder.new(
+      provider_family: :bedrock, provider_instance: 'default'
+    )
+    event = builder.model_available(model_info, readiness: { ready: true })
 
-    expect(events.first.to_h).to include(event_type: :offering_available)
-    expect(events.first.to_h.dig(:offering, :provider_family)).to eq(:bedrock)
-    expect(events.first.to_h.dig(:offering, :model)).to eq('anthropic.claude-3-haiku-20240307-v1:0')
+    expect(event.to_h).to include(event_type: :offering_available)
+    expect(event.to_h.dig(:offering, :provider_family)).to eq(:bedrock)
+    expect(event.to_h.dig(:offering, :model)).to eq('anthropic.claude-3-haiku-20240307-v1:0')
   end
 
   it 'renders Converse requests and parses assistant responses' do
@@ -462,16 +468,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end.new(values)
   end
 
-  def registry_publisher
-    @registry_publisher ||= instance_double(Legion::Extensions::Llm::RegistryPublisher)
-  end
-
-  def stub_registry_publisher
-    allow(described_class).to receive(:registry_publisher).and_return(registry_publisher)
-    allow(registry_publisher).to receive(:publish_readiness_async)
-    allow(registry_publisher).to receive(:publish_models_async)
-  end
-
   def tool(name)
     Struct.new(:name, :description, :params_schema).new(name, 'look up a value', { type: 'object', properties: {} })
   end
@@ -489,15 +485,5 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       ],
       tool_choice: { tool: { name: 'lookup' } }
     }
-  end
-
-  def capture_registry_events(models, readiness:)
-    publisher = Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :bedrock)
-    events = []
-    allow(publisher).to receive(:publishing_available?).and_return(true)
-    allow(publisher).to receive(:publish_event) { |event| events << event }
-    allow(publisher).to receive(:schedule).and_yield
-    publisher.publish_models_async(models, readiness:)
-    events
   end
 end

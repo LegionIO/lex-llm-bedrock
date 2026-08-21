@@ -28,11 +28,12 @@ module Legion
                 "bedrock.runner.fleet_worker.handle_fleet_request: request_id=#{message[:request_id]} " \
                   "provider_instance=#{message[:provider_instance] || 'default'}"
               end
+              # L6: the responder takes only the payload and the family —
+              # v3 dispatch is exact-only and never constructs a provider,
+              # so the dead provider_class/provider_instances params are gone.
               Legion::Extensions::Llm::Fleet::ProviderResponder.call(
                 payload: message,
-                provider_family: Bedrock::PROVIDER_FAMILY,
-                provider_class: Bedrock::Provider,
-                provider_instances: -> { Bedrock.discover_instances }
+                provider_family: Bedrock::PROVIDER_FAMILY
               )
             end
           end

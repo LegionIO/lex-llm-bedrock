@@ -30,10 +30,6 @@ module Legion
             def configuration_requirements = []
             def capabilities = Capabilities
 
-            def registry_publisher
-              Legion::Extensions::Llm::Bedrock.registry_publisher
-            end
-
             def resolve_model_id(model_id, **)
               ALIASES.fetch(model_id.to_s, model_id.to_s)
             end
