@@ -65,13 +65,10 @@ module Legion
             settings = CredentialSources.setting(:extensions, :llm, :bedrock)
             return unless settings.is_a?(Hash) && !settings.empty?
 
-            default_config = dedup_config(normalize_instance_config(settings))
-            unless default_config.empty?
-              default_config[:source] = CredentialSources.source_tag(:settings, 'extensions.llm.bedrock')
-              default_config[:credential_fingerprint] = CredentialSources.config_fingerprint(default_config)
-              candidates[:settings] = default_config.merge(tier: :cloud)
-            end
-
+            # B15: operator-named instances are collected before the
+            # top-level :settings (source-named) candidate — with first-wins
+            # dedup, the operator's instance keeps its name over the
+            # source-named fallback carrying the same credentials.
             settings_instances(settings).each do |name, config|
               next unless config.is_a?(Hash)
 
@@ -81,6 +78,13 @@ module Legion
               normalized[:credential_fingerprint] = CredentialSources.config_fingerprint(normalized)
               candidates[name.to_sym] = normalized.merge(tier: :cloud)
             end
+
+            default_config = dedup_config(normalize_instance_config(settings))
+            return if default_config.empty?
+
+            default_config[:source] = CredentialSources.source_tag(:settings, 'extensions.llm.bedrock')
+            default_config[:credential_fingerprint] = CredentialSources.config_fingerprint(default_config)
+            candidates[:settings] = default_config.merge(tier: :cloud)
           end
 
           def discover_broker(candidates)

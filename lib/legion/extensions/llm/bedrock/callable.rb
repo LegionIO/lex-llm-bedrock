@@ -80,10 +80,14 @@ module Legion
               end
             end
 
+            # B19: unowned fleet params are not forwarded — the exact
+            # execution binding carries no payload the operation does not own
+            # (the old params passthrough reached the InvokeModel body
+            # silently). Only the operation's named keys cross the boundary.
             def embed(text:, model:, **rest)
               dispatch! do
-                named, params = split_fleet_kwargs(rest, EMBED_NAMED_KEYS)
-                provider.embed(text: text, model: model, params: params, **named)
+                named, _params = split_fleet_kwargs(rest, EMBED_NAMED_KEYS)
+                provider.embed(text: text, model: model, **named)
               end
             end
 
@@ -92,19 +96,23 @@ module Legion
             def count_tokens(messages:, model:, **rest)
               dispatch! do
                 provider.enforce_canonical_messages!(messages)
-                named, params = split_fleet_kwargs(rest, COUNT_TOKENS_NAMED_KEYS)
-                provider.count_tokens(messages: messages, model: model, params: params, **named)
+                named, _params = split_fleet_kwargs(rest, COUNT_TOKENS_NAMED_KEYS)
+                provider.count_tokens(messages: messages, model: model, **named)
               end
             end
 
             def normalize_dispatch_error(error:)
-              reason = error.message.to_s[0, 512]
+              # B9: the base reason policy (10 §1E) — the bounded exception
+              # CLASS NAME; never a response body, credential, endpoint, or
+              # exception message (AWS SDK messages embed request context).
+              reason = error.class.name
+              reason = 'UnknownError' if reason.nil? || reason.empty?
 
               kind = classify_error(error: error)
 
               Legion::Extensions::Llm::Routing::ProviderOutcome.new(
                 kind: kind,
-                reason: reason.empty? ? 'unknown dispatch error' : reason
+                reason:
               )
             end
 

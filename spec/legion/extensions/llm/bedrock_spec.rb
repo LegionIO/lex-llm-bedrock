@@ -16,6 +16,12 @@ class FakeConverseStream
   def on_metadata_event
     yield Struct.new(:usage).new(@usage)
   end
+
+  # B7: the converse error-event hook the provider registers — the fake
+  # fires no error events.
+  def on_error_event
+    nil
+  end
 end
 
 CANONICAL = Legion::Extensions::Llm::Canonical
@@ -215,11 +221,14 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
     result = provider.chat(messages: [message], model: model, params: CANONICAL::Params.build(temperature: 0.2))
 
+    # B18: max_tokens defaults once at the shared owner — the model object's
+    # max_output_tokens metadata is no longer a second authority, so a
+    # params-less converse request omits max_tokens (the API default applies).
     expect(runtime_client).to have_received(:converse).with(
       hash_including(
         model_id: 'us.anthropic.claude-3-haiku-20240307-v1:0',
         messages: [{ role: 'user', content: [{ text: 'hello' }] }],
-        inference_config: { temperature: 0.2, max_tokens: 2048 }
+        inference_config: { temperature: 0.2 }
       )
     )
     expect(result).to be_a(CANONICAL::Response)
@@ -330,6 +339,45 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       expect { whitelist_provider.embed(text: 'hello', model: 'amazon.titan-embed-text-v2:0') }
         .to raise_error(Legion::Extensions::Llm::ModelNotAllowedError)
       expect(runtime_client).not_to have_received(:invoke_model)
+    end
+  end
+
+  # B3: the dispatch funnel is the ONE canonical enforcement seam — poison
+  # tools/thinking raise before any rendering (the Hash-tolerant invoke
+  # renderer that carried poison to the wire is deleted; the fleet-side
+  # rehydration is the W4 boundary's job, core side).
+  describe 'canonical boundary (B3)' do
+    it 'rejects Hash tool values at the provider funnel, before any Bedrock call' do
+      allow(runtime_client).to receive(:converse)
+
+      expect do
+        provider.chat(messages: [message], model: model, tools: { lookup: { name: 'lookup' } })
+      end.to raise_error(ArgumentError, /Canonical::ToolDefinition/)
+      expect(runtime_client).not_to have_received(:converse)
+    end
+
+    it 'rejects a non-Hash tools container at the provider funnel' do
+      expect do
+        provider.chat(messages: [message], model: model, tools: [tool('lookup')])
+      end.to raise_error(ArgumentError, /Hash<name, Canonical::ToolDefinition>/)
+    end
+
+    it 'rejects a Hash thinking value at the provider funnel' do
+      expect do
+        provider.chat(messages: [message], model: model, thinking: { budget: 1024 })
+      end.to raise_error(ArgumentError, /Canonical::Thinking::Config/)
+    end
+
+    it 'accepts nil tools (the H3 contract shape) and renders no tool_config' do
+      allow(runtime_client).to receive(:converse).and_return(
+        output: { message: { content: [{ text: 'done' }], role: 'assistant' } }
+      )
+
+      provider.chat(messages: [message], model: model, tools: nil)
+
+      expect(runtime_client).to have_received(:converse).with(
+        hash_not_including(:tool_config)
+      )
     end
   end
 
@@ -469,7 +517,13 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   def tool(name)
-    Struct.new(:name, :description, :params_schema).new(name, 'look up a value', { type: 'object', properties: {} })
+    # B3: the dispatch funnel is Canonical::ToolDefinition-only — the legacy
+    # Struct tool shape is a boundary violation (rejected, never rendered).
+    CANONICAL::ToolDefinition.build(
+      name: name,
+      description: 'look up a value',
+      parameters: { type: 'object', properties: {} }
+    )
   end
 
   def lookup_tool_config

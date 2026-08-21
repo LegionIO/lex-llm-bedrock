@@ -17,17 +17,14 @@ module Legion
           module InvokeModelHelpers
             private
 
-            def anthropic_model?(model_id)
-              return false unless model_id
-
-              model_id.to_s.start_with?('anthropic.', 'us.anthropic.', 'eu.anthropic.', 'ap.anthropic.')
-            end
-
-            def invoke_model_chat(messages:, model:, tools: {}, tool_prefs: nil, thinking: nil, params: nil)
+            # B5: system arrives as the folded member value (the dispatch
+            # edge folded system-role messages); messages are system-free.
+            def invoke_model_chat(messages:, model:, tools: {}, tool_prefs: nil,
+                                  system: nil, thinking: nil, params: nil)
               mid = model_id(model)
               body = build_invoke_model_body(
                 messages: messages, model: mid, tools: tools, tool_prefs: tool_prefs,
-                thinking: thinking, params: params
+                system: system, thinking: thinking, params: params
               )
               log.debug { "bedrock.provider.invoke_model_chat: model=#{mid} thinking=#{thinking.inspect}" }
 
@@ -43,26 +40,23 @@ module Legion
               body_raw = body_raw.string if body_raw.respond_to?(:string)
               body_str = body_raw.to_s
 
-              dump_invoke_model_response(body_str, 'bedrock_invoke_chat')
-
               parsed_body = Legion::JSON.parse(body_str, symbolize_names: false)
               parse_invoke_model_response_hash(parsed_body, mid)
             end
 
-            def invoke_model_stream(messages:, model:, tools: {}, tool_prefs: nil, thinking: nil, params: nil, &)
+            def invoke_model_stream(messages:, model:, tools: {}, tool_prefs: nil, system: nil,
+                                    thinking: nil, params: nil, &)
               mid = model_id(model)
               body = build_invoke_model_body(
                 messages: messages, model: mid, tools: tools, tool_prefs: tool_prefs,
-                thinking: thinking, params: params
+                system: system, thinking: thinking, params: params
               )
               log.debug { "bedrock.provider.invoke_model_stream: model=#{mid} thinking=#{thinking.inspect}" }
 
               request_id = params&.metadata&.[](:request_id)
               state = { accumulated: +'', thinking: +'', final_usage: nil, stop_reason: nil,
                         tool_use_blocks: [], current_tool_use: nil, in_thinking: false,
-                        raw_events: [], request_id: request_id }
-
-              dump_path = ENV.fetch('BEDROCK_DEBUG_OUTPUT', nil)
+                        stream_error: nil, request_id: request_id }
 
               runtime_client.invoke_model_with_response_stream(
                 model_id: self.class.inference_profile_id(mid, geo_prefix: geo_prefix),
@@ -70,16 +64,20 @@ module Legion
                 accept: 'application/json',
                 body: Legion::JSON.generate(body)
               ) do |stream|
-                wire_invoke_model_response_stream(stream, state, dump_path, &)
+                wire_invoke_model_response_stream(stream, state, &)
               end
 
-              dump_invoke_model_stream_events(state[:raw_events], dump_path)
+              # B7: an explicit provider error event is a dispatch failure —
+              # raised before any done chunk. B6: the strict stream-end tool
+              # parse happens before the done chunk for the same reason.
+              raise_stream_error!(state, dialect: 'invoke_model')
+              tool_calls = build_stream_tool_calls(state[:tool_use_blocks])
 
               yield done_chunk(state, request_id: state[:request_id]) if block_given?
-              build_stream_response(state, mid)
+              build_stream_response(state, mid, tool_calls:)
             end
 
-            def wire_invoke_model_response_stream(stream, state, dump_path, &)
+            def wire_invoke_model_response_stream(stream, state, &)
               stream.on_chunk_event do |event|
                 raw = event.respond_to?(:bytes) ? event.bytes : nil
                 raw = raw.read if raw.respond_to?(:read)
@@ -94,7 +92,6 @@ module Legion
                   raw_event = Legion::JSON.parse(line, symbolize_names: false)
                   next unless raw_event.is_a?(Hash)
 
-                  state[:raw_events] << { event: raw_event['type'] || 'unknown', data: raw_event } if dump_path
                   handle_invoke_model_stream_json(raw_event, state, &)
                 end
               rescue Legion::JSON::ParseError => e
@@ -106,76 +103,45 @@ module Legion
                 raise
               end
 
+              # B7: explicit provider error events are dispatch failures —
+              # recorded and raised before any done chunk (the old log-only
+              # handlers let a truncated stream complete as success).
               stream.on_error_event do |event|
-                log.warn do
-                  "bedrock.provider.invoke_model_stream: error event ivars=#{event.instance_variables.inspect}"
-                end
+                record_stream_error(state, event: event, type: 'error')
               end
 
               stream.on_internal_server_exception_event do |event|
-                log.warn do
-                  'bedrock.provider.invoke_model_stream: internal_server_exception ' \
-                    "ivars=#{event.instance_variables.inspect}"
-                end
+                record_stream_error(state, event: event, type: 'internal_server_exception')
               end
 
               stream.on_model_stream_error_exception_event do |event|
-                log.warn do
-                  'bedrock.provider.invoke_model_stream: model_stream_error ' \
-                    "ivars=#{event.instance_variables.inspect}"
-                end
+                record_stream_error(state, event: event, type: 'model_stream_error_exception')
               end
             end
 
             # 08 R1/F4: the Anthropic-wire renderer receives canonical values —
             # max_tokens/temperature are read from the Canonical::Params members.
-            def build_invoke_model_body(messages:, model:, tools: {}, tool_prefs: nil, thinking: nil, params: nil)
-              system_content = extract_invoke_model_system(messages)
+            # B18: max_tokens has one owner (RenderDefaults). B2: the thinking
+            # wire shape has one builder (ThinkingModes) — the Hash-only read
+            # that emitted a budget-less { type: 'enabled' } (the Bedrock
+            # ValidationException shape) is deleted.
+            def build_invoke_model_body(messages:, model:, tools: {}, tool_prefs: nil, system: nil,
+                                        thinking: nil, params: nil)
               body = {
-                max_tokens: params&.max_tokens || 4096,
+                max_tokens: RenderDefaults.max_tokens(params, target: :invoke_model),
                 messages: format_invoke_model_messages(messages),
                 anthropic_version: 'bedrock-2023-05-31'
               }
-              body[:system] = system_content if system_content
+              body[:system] = [{ type: 'text', text: system }] if system
               body[:temperature] = params&.temperature if params&.temperature
               if tools && !tools.empty?
                 tool_format = format_invoke_model_tools(tools, tool_prefs)
                 body[:tools] = tool_format[:tools]
                 body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
               end
-              if thinking
-                thinking_cfg = invoke_model_thinking(model: model, thinking: thinking)
-                body[:thinking] = thinking_cfg if thinking_cfg
-              end
+              thinking_cfg = ThinkingModes.thinking_wire(thinking:, model_id: model, params:)
+              body[:thinking] = thinking_cfg if thinking_cfg
               body
-            end
-
-            def extract_invoke_model_system(messages)
-              parts = []
-              messages.each do |msg|
-                next unless msg.role.to_s == 'system'
-
-                text = canonical_content_text(msg.content, joiner: "\n")
-                parts << text unless text.empty?
-              end
-              return nil if parts.empty?
-
-              parts.map { |t| { type: 'text', text: t } }
-            end
-
-            # Emit the thinking wire shape the model actually supports.
-            # Budgeted-thinking Claude models get { type: 'enabled', budget_tokens: N }.
-            # Every other model returns nil so the caller OMITS the thinking field —
-            # Bedrock rejects { type: 'adaptive' } with a ValidationException (HTTP 500).
-            def invoke_model_thinking(model:, thinking:)
-              mid = model_id(model)
-              return nil if ThinkingModes.known_non_thinking?(mid)
-
-              budget = if thinking.is_a?(Hash)
-                         thinking[:budget_tokens] || thinking['budget_tokens'] ||
-                           thinking[:budget] || thinking['budget']
-                       end
-              { type: 'enabled', budget_tokens: budget }.compact
             end
 
             def format_invoke_model_messages(messages)
@@ -261,14 +227,17 @@ module Legion
               blocks
             end
 
+            # B3: canonical-in — the dispatch funnel (enforce_canonical_tools!)
+            # guarantees Canonical::ToolDefinition values; the Hash tolerance
+            # that carried poison to the wire (load-bearing for the fleet
+            # crash class) is deleted. parameters is normalized at
+            # ToolDefinition construction.
             def format_invoke_model_tools(tools, tool_prefs)
               tool_list = tools.values.map do |tool|
-                raw_schema = tool[:params_schema] || tool['params_schema'] ||
-                             tool[:parameters] || tool['parameters']
                 {
-                  name: tool[:name] || tool['name'],
-                  description: tool[:description] || tool['description'] || '',
-                  input_schema: Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw_schema)
+                  name: tool.name,
+                  description: tool.description,
+                  input_schema: tool.parameters
                 }
               end
 
@@ -362,32 +331,6 @@ module Legion
                   )
                 end
               end
-            end
-
-            def dump_invoke_model_response(body_str, prefix)
-              dump_path = ENV.fetch('BEDROCK_DEBUG_OUTPUT', nil)
-              return unless dump_path
-
-              dump_file = File.join(dump_path, "#{prefix}_#{Time.now.strftime('%Y%m%d_%H%M%S')}.json")
-              File.write(dump_file, body_str)
-              log.debug { "bedrock.provider.invoke_model: raw response dumped to #{dump_file}" }
-            rescue StandardError => e
-              handle_exception(e, level: :warn, handled: true,
-                                  operation: 'bedrock.provider.dump_invoke_model_response')
-            end
-
-            def dump_invoke_model_stream_events(raw_events, dump_path)
-              return unless dump_path && raw_events.any?
-
-              dump_file = File.join(dump_path,
-                                    "bedrock_invoke_stream_#{Time.now.strftime('%Y%m%d_%H%M%S')}.json")
-              File.write(dump_file, Legion::JSON.pretty_generate(raw_events))
-              log.debug do
-                "bedrock.provider.invoke_model_stream: #{raw_events.size} raw events dumped to #{dump_file}"
-              end
-            rescue StandardError => e
-              handle_exception(e, level: :warn, handled: true,
-                                  operation: 'bedrock.provider.dump_invoke_model_stream_events')
             end
           end
         end

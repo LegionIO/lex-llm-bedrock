@@ -110,13 +110,12 @@ module Legion
               ALIASES.key(model)
             end
 
+            # B11: the dispatch/render path no longer remaps model ids —
+            # the Selection's model is the wire model (R8: exact execution
+            # stays exact). Alias resolution is an explicit edge API
+            # (ClassMethods#resolve_model_id), never a render-path authority.
             def model_id(model)
-              id = model.respond_to?(:id) ? model.id : model
-              self.class.resolve_model_id(id)
-            end
-
-            def model_max_tokens(model)
-              model.respond_to?(:max_tokens) ? model.max_tokens : nil
+              model.respond_to?(:id) ? model.id : model
             end
           end
         end

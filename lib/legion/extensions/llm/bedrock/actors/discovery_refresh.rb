@@ -78,28 +78,6 @@ module Legion
 
           # Capability evidence builders for DiscoveryRefresh.
           module DiscoveryCapabilityEvidenceHelpers
-            CONTEXT_WINDOWS = {
-              'anthropic.claude-sonnet-4' => 200_000,
-              'anthropic.claude-haiku-4' => 200_000,
-              'anthropic.claude-opus-4' => 200_000,
-              'anthropic.claude-3-5-sonnet' => 200_000,
-              'anthropic.claude-3-5-haiku' => 200_000,
-              'anthropic.claude-3-haiku' => 200_000,
-              'anthropic.claude-3-opus' => 200_000,
-              'anthropic.claude-3-sonnet' => 200_000,
-              'meta.llama3' => 128_000,
-              'meta.llama3-1' => 128_000,
-              'meta.llama3-2' => 128_000,
-              'meta.llama3-3' => 128_000,
-              'mistral.mistral-large' => 128_000,
-              'mistral.mistral-small' => 128_000,
-              'amazon.titan-text-express' => 8_192,
-              'amazon.titan-text-premier' => 32_000,
-              'amazon.nova-pro' => 300_000,
-              'amazon.nova-lite' => 300_000,
-              'amazon.nova-micro' => 128_000
-            }.freeze
-
             private
 
             def build_capability_evidence(input_mods:, output_mods:, streaming_supported:, model_id:)
@@ -118,8 +96,19 @@ module Legion
                 evidence[:vision] = cap_evidence(capability: :vision, status: :supported,
                                                  source: :provider_catalog)
               end
-              evidence[:tools] = cap_evidence(capability: :tools, status: :supported,
-                                              source: :provider_implementation)
+              # B10: per-model tool evidence, not a blanket catalog claim.
+              # The invoke_model tool renderer is a real implementation for
+              # Anthropic models; for the rest of the AWS catalog the gem has
+              # no per-model fact, and the honest state is :unknown — a
+              # fabricated :supported routes tool requests to models that
+              # reject them with ValidationException.
+              evidence[:tools] = if Legion::Extensions::Llm::Bedrock::ThinkingModes.anthropic_model?(model_id)
+                                   cap_evidence(capability: :tools, status: :supported,
+                                                source: :provider_implementation)
+                                 else
+                                   cap_evidence(capability: :tools, status: :unknown,
+                                                source: :default_false)
+                                 end
               evidence[:thinking] = cap_evidence(
                 capability: :thinking,
                 status: thinking_status_for(model_id: model_id),
@@ -149,7 +138,11 @@ module Legion
             end
 
             def build_context_evidence(model_id:)
-              ctx = CONTEXT_WINDOWS.find { |prefix, _| model_id.start_with?(prefix) }&.last
+              # B20: one CONTEXT_WINDOWS owner (Provider::CONTEXT_WINDOWS) —
+              # the duplicated actor-side table (drift risk one edit away) is
+              # gone.
+              context_windows = Legion::Extensions::Llm::Bedrock::Provider::CONTEXT_WINDOWS
+              ctx = context_windows.find { |prefix, _| model_id.start_with?(prefix) }&.last
               klass = Legion::Extensions::Llm::Inventory::ValueEvidence
               if ctx
                 klass.new(status: :known, value: ctx, source: :provider_catalog)
@@ -196,10 +189,12 @@ module Legion
               # publish zero offerings for every instance (invisible).
               raise
             rescue StandardError => e
-              # Network/runtime failures of the control-plane call yield no
-              # offerings for this tick; the next tick retries.
+              # B8: a failed control-plane observation is NOT an empty
+              # catalog — nil means "no observation"; the caller keeps the
+              # last published snapshot and the next tick retries. A genuine
+              # empty catalog arrives as [] and still publishes.
               handle_exception(e, level: :warn, operation: 'bedrock.actor.discover_offerings')
-              []
+              nil
             end
 
             def extract_model_id(summary:)
@@ -318,14 +313,19 @@ module Legion
               # the instance stuck in :initializing with no actionable signal.
               raise
             rescue Aws::Bedrock::Errors::ServiceError => e
-              readiness_failure(reason: "Bedrock ListFoundationModels failed: #{e.message}", error: e)
+              readiness_failure(operation: 'ListFoundationModels', error: e)
             rescue StandardError => e
-              readiness_failure(reason: "Bedrock health check error: #{e.message}", error: e)
+              readiness_failure(operation: 'health check', error: e)
             end
 
-            def readiness_failure(reason:, error:)
+            # B14: the ReadinessResult contract carries no exception — a
+            # bounded class name, not e.message (the metadata already holds
+            # error_class).
+            def readiness_failure(operation:, error:)
               Legion::Extensions::Llm::Inventory::ReadinessResult.new(
-                ready: false, reason: reason, metadata: { error_class: error.class.name }
+                ready: false,
+                reason: "Bedrock #{operation} failed: #{error.class.name}",
+                metadata: { error_class: error.class.name }
               )
             end
 
@@ -546,11 +546,21 @@ module Legion
                                                               publisher_token: publisher_token)
               readiness = check_health(instance_cfg: instance_cfg)
 
-              if readiness.ready?
+              if readiness.ready? && !offerings.nil?
                 activated = activate_tracked_snapshot(
                   instance_id: instance_id, state: state, probe_token: probe_token
                 )
                 state[:last_probe_outcome] = :success if activated
+              elsif readiness.ready?
+                # B8: the health probe passed but the catalog observation
+                # failed — record the probe honestly and stay :initializing;
+                # the next tick re-observes before activation. A failed
+                # observation must not drive a publication (the old [] path
+                # activated instances with zero offerings).
+                publisher.readiness_succeeded(
+                  instance_id: instance_id, physical_id: physical_id, probe_token: probe_token
+                )
+                state[:last_probe_outcome] = :success
               else
                 publisher.readiness_failed(instance_id: instance_id, physical_id: physical_id,
                                            probe_token: probe_token, reason: readiness.reason)
@@ -642,11 +652,21 @@ module Legion
                 offerings = discover_offerings_for_instance(
                   instance_cfg: state[:instance_cfg], instance_key: state[:instance_key]
                 )
-                reconcile_offerings(instance_id: instance_id, state: state, offerings: offerings)
-                activated = activate_tracked_snapshot(
-                  instance_id: instance_id, state: state, probe_token: probe_token
-                )
-                state[:last_probe_outcome] = :success if activated
+                if offerings.nil?
+                  # B8: failed catalog observation — record the passed probe
+                  # and stay :initializing; a real observation activates.
+                  publisher.readiness_succeeded(
+                    instance_id: instance_id, physical_id: state[:instance_key].physical_id,
+                    probe_token: probe_token
+                  )
+                  state[:last_probe_outcome] = :success
+                else
+                  reconcile_offerings(instance_id: instance_id, state: state, offerings: offerings)
+                  activated = activate_tracked_snapshot(
+                    instance_id: instance_id, state: state, probe_token: probe_token
+                  )
+                  state[:last_probe_outcome] = :success if activated
+                end
               else
                 publisher.readiness_failed(
                   instance_id: instance_id, physical_id: state[:instance_key].physical_id,
@@ -662,6 +682,11 @@ module Legion
               new_offerings = discover_offerings_for_instance(
                 instance_cfg: state[:instance_cfg], instance_key: state[:instance_key]
               )
+              # B8: a failed observation is not a catalog fact — keep the
+              # last published snapshot (the old [] path wiped every offering
+              # of an active instance for up to one discovery interval).
+              return if new_offerings.nil?
+
               changed = reconcile_offerings(instance_id: instance_id, state: state, offerings: new_offerings)
               write_instance_health(name: state[:name], state: state, reason: 'offerings refreshed') \
                 if changed && state[:published]
@@ -808,22 +833,33 @@ module Legion
 
             def write_instance_health(name:, state:, reason:)
               entry = settings_instance_entry(name)
+              return unless entry
+
+              # offerings is nil until the first successful catalog
+              # observation — the capability projection of no observations
+              # is no supported capabilities.
               entry[:health] = instance_health_hash(state: state, reason: reason)
-              entry[:capabilities] = instance_capabilities(state[:offerings])
+              entry[:capabilities] = instance_capabilities(state[:offerings] || [])
             end
 
             def clear_instance_health(name:)
               entry = settings_instance_entry(name)
+              return unless entry
+
               entry.delete(:health)
               entry.delete(:capabilities)
             end
 
+            # B16: display writes only to operator-owned settings entries —
+            # the actor no longer CREATES settings entries for instances it
+            # does not own (a source-named instance has no settings entry and
+            # gets no synthetic one; the vLLM twin guards the same way).
             def settings_instance_entry(name)
               instances = settings[:instances]
-              instances = settings[:instances] = {} unless instances.is_a?(::Hash)
+              return nil unless instances.is_a?(::Hash)
+
               entry = instances[name]
-              entry = instances[name] = {} unless entry.is_a?(::Hash)
-              entry
+              entry.is_a?(::Hash) ? entry : nil
             end
 
             def instance_health_hash(state:, reason:)

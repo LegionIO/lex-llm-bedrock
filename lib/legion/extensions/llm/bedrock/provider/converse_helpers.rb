@@ -17,48 +17,43 @@ module Legion
             # 08 R1/F4: the request renderer receives canonical values —
             # sampling scalars are read from the Canonical::Params members
             # (params.temperature / params.max_tokens), never from a raw hash.
-            def converse_request(messages, model:, params:, tools:, tool_prefs:, thinking: nil)
+            # B5: system arrives as the folded member value (the dispatch
+            # edge folded system-role messages); messages are system-free.
+            # B18: max_tokens has one owner (RenderDefaults).
+            def converse_request(messages, model:, params:, tools:, tool_prefs:, system: nil, thinking: nil)
               inference_config = {
                 temperature: params&.temperature,
-                max_tokens: params&.max_tokens || model_max_tokens(model)
+                max_tokens: RenderDefaults.max_tokens(params, target: :converse)
               }.compact
               additional = bedrock_additional_fields(thinking, model: model_id(model)) || {}
               additional[:response_format] = params&.response_format if params&.response_format
 
               {
                 model_id: self.class.inference_profile_id(model_id(model), geo_prefix: geo_prefix),
-                messages: format_messages(messages.reject { |message| message.role == :system }),
-                system: format_system(messages),
+                messages: format_messages(messages),
+                system: system_blocks(system),
                 inference_config: inference_config,
                 tool_config: format_tool_config(tools, tool_prefs),
                 additional_model_request_fields: additional.empty? ? nil : additional
               }.compact
             end
 
+            # B2: one shared thinking wire builder (ThinkingModes) — the
+            # Hash-read/fabricated-1024 path is deleted.
             def bedrock_additional_fields(thinking, model:)
-              fields = {}
-              if thinking && !ThinkingModes.known_non_thinking?(model)
-                fields[:thinking] = {
-                  type: 'enabled',
-                  budget_tokens: if thinking.is_a?(Hash)
-                                   thinking[:budget_tokens] || thinking['budget_tokens'] ||
-                                     thinking[:budget] || thinking['budget'] || 1024
-                                 else
-                                   1024
-                                 end
-                }
-              end
-              fields.empty? ? nil : fields
+              wire = ThinkingModes.thinking_wire(thinking:, model_id: model)
+              wire ? { thinking: wire } : nil
             end
 
+            # B21: the dead cache-control stub is deleted — Converse has no
+            # cache_control, and a policy that computes eligibility it never
+            # applies invites a half-applied "fix".
             def format_messages(messages)
-              total = messages.size
-              formatted = messages.filter_map.with_index do |message, idx|
+              formatted = messages.filter_map do |message|
                 blocks = build_content_blocks(message)
                 next if blocks.empty?
 
-                cache_blocks = should_cache_message?(idx, total) ? add_cache_control_to_blocks(blocks) : blocks
-                { role: bedrock_role(message.role), content: cache_blocks }
+                { role: bedrock_role(message.role), content: blocks }
               end
               consolidate_adjacent_roles(formatted)
             end
@@ -72,22 +67,6 @@ module Legion
                   content: [{ text: message.text.to_s }]
                 }
               }]
-            end
-
-            def should_cache_message?(index, total)
-              return false if index == total - 1
-
-              index < 4
-            end
-
-            def add_cache_control_to_blocks(blocks)
-              blocks
-            end
-
-            def format_system(messages)
-              system_messages = messages.select { |message| message.role == :system }
-              system_text = system_messages.map { |message| message.text.to_s }
-              system_blocks(system_text.join("\n"))
             end
 
             def system_blocks(system)
@@ -181,39 +160,32 @@ module Legion
             end
 
             def format_tool_config(tools, tool_prefs)
-              return nil if tools.empty?
+              # H3 contract: tools is Hash<name, Canonical::ToolDefinition>
+              # or nil — nil renders no tool_config.
+              return nil if tools.nil? || tools.empty?
 
               log.debug do
                 "bedrock.provider.tools: formatting tools=#{tools.keys.map(&:to_s).sort.join(',')} " \
                   "tool_choice=#{tool_choice_label(tool_prefs)}"
               end
               {
-                tools: tools.values.map { |tool| tool_definition_with_cache(tool) },
+                tools: tools.values.map { |tool| tool_definition(tool) },
                 tool_choice: tool_choice(tool_prefs)
               }.compact
             end
 
-            def tool_definition_with_cache(tool)
-              tool_definition(tool)
-            end
-
+            # B3: canonical-in — the dispatch funnel (enforce_canonical_tools!)
+            # guarantees Canonical::ToolDefinition values; the respond_to?
+            # dual reads are deleted. parameters is normalized at
+            # ToolDefinition construction.
             def tool_definition(tool)
               {
                 tool_spec: {
                   name: tool.name,
                   description: tool.description,
-                  input_schema: { json: tool_schema(tool) }
+                  input_schema: { json: tool.parameters }
                 }
               }
-            end
-
-            def tool_schema(tool)
-              raw = if tool.respond_to?(:params_schema) && tool.params_schema
-                      tool.params_schema
-                    elsif tool.respond_to?(:parameters)
-                      tool.parameters
-                    end
-              Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw)
             end
 
             def tool_choice(tool_prefs)
@@ -278,42 +250,23 @@ module Legion
             def stream_converse(request, fallback_model, request_id: nil, &)
               state = { accumulated: +'', thinking: +'', final_usage: nil, stop_reason: nil,
                         tool_use_blocks: [], current_tool_use: nil, in_thinking: false,
-                        raw_events: [] }
+                        stream_error: nil }
 
               log.debug do
                 "bedrock.provider.stream_converse: starting model=#{fallback_model} " \
                   "tools=#{state[:tool_use_blocks].size}"
               end
 
-              dump_path = ENV.fetch('BEDROCK_DEBUG_OUTPUT', nil)
-
               runtime_client.converse_stream(**request) do |stream|
                 wire_stream_handlers(stream, state, request_id:, &)
-
-                next unless dump_path
-
-                stream.on_content_block_start_event do |e|
-                  state[:raw_events] << { event: 'content_block_start', data: safe_event_data(e) }
-                end
-                stream.on_content_block_delta_event do |e|
-                  state[:raw_events] << { event: 'content_block_delta', data: safe_event_data(e) }
-                end
-                stream.on_content_block_stop_event do |e|
-                  state[:raw_events] << { event: 'content_block_stop', data: safe_event_data(e) }
-                end
-                stream.on_message_start_event do |e|
-                  state[:raw_events] << { event: 'message_start', data: safe_event_data(e) }
-                end
-                stream.on_message_stop_event do |e|
-                  state[:raw_events] << { event: 'message_stop', data: safe_event_data(e) }
-                end
-                stream.on_metadata_event { |e| state[:raw_events] << { event: 'metadata', data: safe_event_data(e) } }
               end
 
-              if dump_path && state[:raw_events].any?
-                dump_stream_events(state[:raw_events], dump_path,
-                                   'bedrock_stream')
-              end
+              # B7: an explicit provider error event is a dispatch failure —
+              # raised before any done chunk (a truncated stream is never a
+              # completed response). B6: the strict stream-end tool parse
+              # happens before the done chunk for the same reason.
+              raise_stream_error!(state, dialect: 'converse')
+              tool_calls = build_stream_tool_calls(state[:tool_use_blocks])
 
               log.debug do
                 "bedrock.provider.stream_converse: completed model=#{fallback_model} " \
@@ -322,7 +275,7 @@ module Legion
               end
 
               yield done_chunk(state, request_id:) if block_given?
-              build_stream_response(state, fallback_model)
+              build_stream_response(state, fallback_model, tool_calls:)
             end
 
             def done_chunk(state, request_id:)
@@ -333,21 +286,15 @@ module Legion
               )
             end
 
-            def dump_stream_events(events, dump_path, prefix)
-              dump_file = File.join(dump_path, "#{prefix}_#{Time.now.strftime('%Y%m%d_%H%M%S')}.json")
-              File.write(dump_file, Legion::JSON.pretty_generate(events))
-              log.debug { "bedrock.provider.stream_converse: #{events.size} raw events dumped to #{dump_file}" }
-            rescue StandardError => e
-              handle_exception(e, level: :warn, handled: true,
-                                  operation: 'bedrock.provider.dump_stream_events')
-            end
-
             # 08 R2: the stream's accumulated state builds a Canonical::Response.
-            def build_stream_response(state, fallback_model)
+            # B6/B7: tool_calls are parsed strictly BEFORE the done chunk
+            # (stream_converse passes them in) — a parse failure raises before
+            # the stream is ever presented as complete.
+            def build_stream_response(state, fallback_model, tool_calls:)
               Canonical::Response.build(
                 text: state[:accumulated],
                 thinking: state[:thinking].empty? ? nil : Canonical::Thinking.build(content: state[:thinking]),
-                tool_calls: build_stream_tool_calls(state[:tool_use_blocks]),
+                tool_calls:,
                 usage: usage_from(state[:final_usage]),
                 stop_reason: map_stop_reason(state[:stop_reason]),
                 model: fallback_model
@@ -360,6 +307,33 @@ module Legion
               wire_block_stop(stream, state)
               wire_message_stop(stream, state)
               stream.on_metadata_event { |event| state[:final_usage] = value(event, :usage) }
+              # B7: the converse path had no error-event handlers at all — a
+              # provider error event was invisible and the truncated stream
+              # completed as success. Record it; raise before any done chunk.
+              stream.on_error_event { |event| record_stream_error(state, event: event, type: 'error') }
+            end
+
+            # B7: one shared stream-error recorder for both dialects. The
+            # FIRST explicit error event wins; the provider's message is kept
+            # for the raised exception (local), the reason that crosses the
+            # dispatch boundary is the exception class name.
+            def record_stream_error(state, event:, type:)
+              return unless state[:stream_error].nil?
+
+              err = value(event, :error)
+              message = value(err, :message) || event.class.name
+              state[:stream_error] = { type:, message: message.to_s }
+              log.warn do
+                "bedrock.provider.stream: error event type=#{type} message=#{sanitize_log(message.to_s[0, 200])}"
+              end
+            end
+
+            def raise_stream_error!(state, dialect:)
+              return if state[:stream_error].nil?
+
+              raise Bedrock::StreamError,
+                    "bedrock #{dialect} stream failed: #{state[:stream_error][:type]}: " \
+                    "#{state[:stream_error][:message]}"
             end
 
             def wire_block_start(stream, state)
@@ -394,6 +368,10 @@ module Legion
                 if text
                   if state[:in_thinking]
                     state[:thinking] << text
+                    # B12: the converse path now streams thinking deltas like
+                    # the invoke path — the dialect asymmetry (thinking only
+                    # in the final response) is deleted.
+                    yield Canonical::Chunk.thinking_delta(delta: text, request_id:) if block_given? && !text.empty?
                   else
                     state[:accumulated] << text
                     yield Canonical::Chunk.text_delta(delta: text, request_id:) if block_given?
@@ -427,19 +405,14 @@ module Legion
               end
             end
 
-            # Streamed tool-input JSON fragments assemble before parsing (10 U2):
-            # one shared parse, invalid JSON is a logged contract violation.
+            # Streamed tool-input JSON fragments assemble before parsing
+            # (10 U2): the ONE shared strict parser (B6) — invalid JSON
+            # raises, never a fabricated {}.
             def build_stream_tool_calls(tool_use_blocks)
               return [] if tool_use_blocks.empty?
 
               tool_use_blocks.map do |block|
-                input = begin
-                  Legion::JSON.load(block[:input_json])
-                rescue Legion::JSON::ParseError => e
-                  handle_exception(e, level: :warn, handled: true,
-                                      operation: 'bedrock.provider.build_stream_tool_calls')
-                  {}
-                end
+                input = Legion::Extensions::Llm::Responses::ToolArguments.parse!(block[:input_json])
                 name = block[:name]
                 id = block[:tool_use_id] || name
                 Canonical::ToolCall.build(id: id, name: name, arguments: input)

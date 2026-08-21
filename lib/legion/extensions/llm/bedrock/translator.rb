@@ -4,6 +4,7 @@ require 'legion/json'
 require 'legion/logging/helper'
 require 'legion/extensions/llm/canonical'
 require 'legion/extensions/llm/bedrock/thinking_modes'
+require 'legion/extensions/llm/bedrock/render_defaults'
 require 'legion/extensions/llm/bedrock/translator/read_helpers'
 require 'legion/extensions/llm/bedrock/translator/request_rendering'
 require 'legion/extensions/llm/bedrock/translator/message_rendering'
@@ -27,8 +28,6 @@ module Legion
           include MessageRendering
           include ResponseParsing
           include ChunkParsing
-
-          DEFAULT_MAX_TOKENS = 4096
 
           # Wire spelling table (13 §3 edge): the Converse API spells the
           # content-filter stop reason 'content_filtered'; Anthropic event
@@ -73,6 +72,7 @@ module Legion
           # @param target [Symbol, nil] :converse, :invoke_model, or nil (auto)
           # @return [Hash] Bedrock wire-format payload
           def render_request(canonical, target: nil)
+            reject_system_messages!(canonical)
             target ||= target_for(canonical)
             case target
             when :converse     then render_converse(canonical)
@@ -119,11 +119,31 @@ module Legion
 
           # @param canonical [Canonical::Request]
           # @return [Symbol] :converse or :invoke_model
+          # B1: the dialect predicate has one owner — ThinkingModes, shared
+          # with the Provider dispatch path.
           def target_for(canonical)
-            mid       = model_from_request(canonical)
-            has_think = canonical.thinking.respond_to?(:enabled?) && canonical.thinking.enabled?
-            has_tools = canonical.tools && !canonical.tools.empty?
-            anthropic_model?(mid) && (has_think || has_tools) ? :invoke_model : :converse
+            mid = model_from_request(canonical)
+            if ThinkingModes.invoke_model_target?(model_id: mid, thinking: canonical.thinking, tools: canonical.tools)
+              :invoke_model
+            else
+              :converse
+            end
+          end
+
+          private
+
+          # B5: the system MEMBER is the single system source. System-role
+          # messages are bridge residue that request construction folds into
+          # the member (the vLLM bridge law) — rendering from them, or
+          # silently dropping them, is the two-source defect (poison fails,
+          # it does not render).
+          def reject_system_messages!(canonical)
+            canonical.messages&.each do |message|
+              if message.role == :system
+                raise ArgumentError,
+                      'bedrock.render_request: system-role messages must be folded into the system member'
+              end
+            end
           end
         end
       end

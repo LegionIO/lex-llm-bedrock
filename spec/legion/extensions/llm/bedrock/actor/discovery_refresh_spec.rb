@@ -186,6 +186,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     before do
       allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
                                                     .and_return(instances: { east: east_config })
+      # B16: the display writer only touches operator-owned settings entries
+      # — the operator's entry exists in the settings tree here.
+      settings_root[:llm] = { bedrock: { instances: { east: east_config } } }
     end
 
     it 'claims, probes, and activates a configured instance' do
@@ -320,6 +323,99 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     end
   end
 
+  # B8: a failed catalog observation is not a catalog fact. The replace path
+  # keeps the last published snapshot (the old [] conflation wiped every
+  # offering of an active instance for up to one discovery interval); a
+  # genuinely empty catalog ([]) still publishes.
+  describe 'failed observation retention (B8)' do
+    it 'keeps the published snapshot when a catalog fetch fails on an active instance' do
+      actor = described_class.new
+      original = offering_draft(actor: actor, model: 'anthropic.claude-a')
+      allow(actor).to receive(:discover_offerings_for_instance).and_return([original], nil)
+      allow(actor).to receive_messages(claimable_instances: { east: east_config }, check_health: ready_result)
+      allow(registry).to receive(:replace_instance_snapshot).and_call_original
+
+      actor.manual
+      actor.manual
+
+      instance_key = key_for(:east, east_config)
+      expect(registry).not_to have_received(:replace_instance_snapshot)
+      expect(registry.snapshot.offerings_for(instance_key: instance_key).size).to eq(1)
+      actor.shutdown
+    end
+
+    it 'publishes a genuinely observed empty catalog ([])' do
+      actor = described_class.new
+      original = offering_draft(actor: actor, model: 'anthropic.claude-a')
+      allow(actor).to receive(:discover_offerings_for_instance).and_return([original], [])
+      allow(actor).to receive_messages(claimable_instances: { east: east_config }, check_health: ready_result)
+      allow(registry).to receive(:replace_instance_snapshot).and_call_original
+
+      actor.manual
+      actor.manual
+
+      instance_key = key_for(:east, east_config)
+      expect(registry).to have_received(:replace_instance_snapshot).once
+      expect(registry.snapshot.offerings_for(instance_key: instance_key)).to be_empty
+      actor.shutdown
+    end
+
+    it 'stays initializing (no zero-offering activation) when the claim-time fetch fails' do
+      actor = described_class.new
+      # The health probe passes, but the catalog observation failed (nil):
+      # a failed observation must not drive a publication.
+      allow(actor).to receive(:discover_offerings_for_instance).and_return(nil)
+      allow(actor).to receive_messages(claimable_instances: { east: east_config }, check_health: ready_result)
+      allow(registry).to receive(:activate_instance_snapshot).and_call_original
+
+      actor.manual
+
+      instance_key = key_for(:east, east_config)
+      expect(registry).not_to have_received(:activate_instance_snapshot)
+      expect(registry.snapshot.instance(instance_key: instance_key)).to be_nil
+      expect(registry.snapshot.publication_status(instance_key: instance_key).state).to eq(:initializing)
+      actor.shutdown
+    end
+  end
+
+  # B14: the ReadinessResult contract carries no exception — a bounded class
+  # name, never e.message.
+  describe 'readiness reason hygiene (B14)' do
+    it 'carries the exception class name, not the message, in readiness reason' do
+      actor = described_class.new
+      client, _state = make_client(healthy: false)
+      allow(actor).to receive(:build_bedrock_client).and_return(client)
+      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
+                                                    .and_return(instances: { east: east_config })
+
+      actor.manual
+
+      status = registry.snapshot.publication_status(instance_key: key_for(:east, east_config))
+      expect(status.last_error).to include('Aws::Bedrock::Errors::ServiceError')
+      expect(status.last_error).not_to include('service unavailable')
+      actor.shutdown
+    end
+  end
+
+  # B16: the display writer only touches operator-owned settings entries —
+  # a source-named instance (env credential, no settings entry) gets no
+  # synthetic settings entry.
+  describe 'display writer ownership (B16)' do
+    it 'does not create a settings entry for a source-named instance' do
+      allow(credential_sources).to receive(:env).with('AWS_BEARER_TOKEN_BEDROCK').and_return('tok-env')
+      allow(credential_sources).to receive(:env).with('AWS_DEFAULT_REGION').and_return('us-east-1')
+      client, _state = make_client(healthy: true)
+      settings_root[:llm] = { bedrock: {} }
+
+      actor = described_class.new
+      allow(actor).to receive(:build_bedrock_client).and_return(client)
+      actor.manual
+
+      expect(settings_root.dig(:llm, :bedrock, :instances, :env_bearer)).to be_nil
+      actor.shutdown
+    end
+  end
+
   describe 'recovery after an initial readiness failure (D4)' do
     # No stub_responses here — the fake client in the test drives readiness.
     let(:unstubbed_east) { east_config(bedrock_stub_responses: nil) }
@@ -327,6 +423,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     before do
       allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
                                                     .and_return(instances: { east: unstubbed_east })
+      # B16: operator-owned settings entry (the display writer's guard).
+      settings_root[:llm] = { bedrock: { instances: { east: unstubbed_east } } }
     end
 
     it 'stays initializing while unhealthy, then re-activates on a later passing probe' do
@@ -396,6 +494,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh do
     before do
       allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock)
                                                     .and_return(instances: { east: east_config })
+      # B16: operator-owned settings entry (the display writer's guard).
+      settings_root[:llm] = { bedrock: { instances: { east: east_config } } }
     end
 
     it 'removes every claimed instance and clears the settings health' do

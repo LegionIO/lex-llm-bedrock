@@ -128,10 +128,6 @@ module Legion
             rescue NameError
               nil
             end
-
-            def safe_event_data(evt)
-              evt.respond_to?(:to_h) ? evt.to_h : evt.inspect[0, 500]
-            end
           end
         end
       end

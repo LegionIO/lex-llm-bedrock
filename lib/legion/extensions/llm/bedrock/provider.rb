@@ -7,6 +7,7 @@ require 'legion/json'
 require 'legion/logging/helper'
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/bedrock/thinking_modes'
+require 'legion/extensions/llm/bedrock/render_defaults'
 require 'legion/extensions/llm/bedrock/provider/constants'
 require 'legion/extensions/llm/bedrock/provider/class_methods'
 require 'legion/extensions/llm/bedrock/provider/client_helpers'
@@ -20,6 +21,12 @@ module Legion
     module Llm
       module Bedrock
         class StaticCredentialsBlockedError < Legion::Extensions::Llm::ConfigurationError; end
+
+        # B7: an explicit provider stream-error event (converse ErrorEvent,
+        # invoke error/internal_server_exception/model_stream_error) is a
+        # dispatch failure — raised before any done chunk so a truncated
+        # stream is never presented as a completed response.
+        class StreamError < Legion::Extensions::Llm::Error; end
 
         # Amazon Bedrock provider implementation for the Legion::Extensions::Llm contract.
         #

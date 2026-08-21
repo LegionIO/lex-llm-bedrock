@@ -77,28 +77,37 @@ module Legion
               current
             end
 
+            # B4: the provider translator consumes the selected model — it
+            # does not choose or default one. The Selection owns the model
+            # (R4); routing/metadata[:model] is the carried fact and a missing
+            # model is a contract error (the messages.first.model
+            # response-provenance fallback is deleted — PR #45 law).
             def model_from_request(canonical)
-              canonical.routing[:model] || canonical.metadata[:model] ||
-                canonical.messages&.first&.model
-            end
+              model = canonical.routing[:model] || canonical.metadata[:model]
+              if model.nil?
+                raise ArgumentError,
+                      'bedrock.render_request: no model in request; routing must select a model'
+              end
 
-            def anthropic_model?(model_id)
-              return false unless model_id
-
-              model_id.to_s.start_with?('anthropic.', 'us.anthropic.', 'eu.anthropic.', 'ap.anthropic.')
+              model
             end
 
             def converse_role(role)
               role == :assistant ? 'assistant' : 'user'
             end
 
+            # Canonical content (String | ContentBlock | Array<ContentBlock>
+            # | nil) to plain text — one strict extraction (B22: the dual
+            # Hash reads are deleted; the request normalizer guarantees the
+            # shape).
             def convert_to_text(content)
-              if content.is_a?(String)
-                content.strip
-              elsif content.is_a?(Array)
-                content.filter_map { |c| c.respond_to?(:text) ? c.text : c['text'] || c[:text] }.join
+              case content
+              when ::String then content.strip
+              when Canonical::ContentBlock then content.text.to_s
+              when ::Array
+                content.filter_map { |c| c.is_a?(Canonical::ContentBlock) ? c.text.to_s : nil }.join
               else
-                content.to_s.strip
+                content.to_s
               end
             end
 

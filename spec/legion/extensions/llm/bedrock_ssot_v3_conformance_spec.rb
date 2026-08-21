@@ -616,11 +616,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       expect(outcome.reason).to be_a(String)
     end
 
-    it 'truncates reason to 512 bytes' do
-      long_message = 'x' * 1000
+    it 'uses the bounded exception class name as reason, never the message body (B9)' do
+      long_message = 'request context: https://bedrock-runtime.us-east-1.amazonaws.com/secret-creds'
       error = RuntimeError.new(long_message)
       outcome = callable.normalize_dispatch_error(error: error)
-      expect(outcome.reason.length).to be <= 1024
+      expect(outcome.reason).to eq('RuntimeError')
+      expect(outcome.reason).not_to include(long_message)
     end
   end
 
@@ -741,6 +742,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end
 
     it_behaves_like 'B1 — central canonical enforcement (08 F2)'
+    # B3: the tools half of the same boundary — the bedrock funnel now
+    # enforces Hash<name, Canonical::ToolDefinition> once, before rendering
+    # (the Hash-tolerant invoke renderer that carried poison to the wire is
+    # deleted; fleet-side rehydration is the W4 boundary's job, core side).
+    it_behaves_like 'B1b — central canonical tool enforcement (H3)'
     it_behaves_like 'B2 — canonical outputs (05 O5, 08 R2)'
   end
 

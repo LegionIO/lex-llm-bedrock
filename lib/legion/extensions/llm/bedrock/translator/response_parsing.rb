@@ -104,17 +104,13 @@ module Legion
               end
             end
 
+            # B6: the ONE shared strict arguments parser (10 U2) — invalid or
+            # non-object JSON raises; the rescue-to-{} policy is deleted. A
+            # wire Hash passes through (already parsed by the transport).
             def parse_tool_input(input)
               return input if input.is_a?(Hash)
-              return {} unless input.is_a?(String)
 
-              begin
-                Legion::JSON.load(input)
-              rescue Legion::JSON::ParseError => e
-                handle_exception(e, level: :warn, handled: true,
-                                    operation: 'bedrock.translator.parse_tool_input')
-                {}
-              end
+              Legion::Extensions::Llm::Responses::ToolArguments.parse!(input)
             end
 
             def extract_stop_reason_from(message)

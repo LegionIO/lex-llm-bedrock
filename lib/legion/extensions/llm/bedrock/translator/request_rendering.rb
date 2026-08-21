@@ -16,7 +16,8 @@ module Legion
                 messages: render_converse_messages(canonical.messages),
                 inference_config: build_inference_config(canonical)
               }
-              payload[:system] = [{ text: canonical.system.to_s }] if canonical.system && !canonical.system.to_s.empty?
+              sys = system_text(canonical)
+              payload[:system] = [{ text: sys }] if sys
               tool_cfg = build_converse_tool_config(canonical)
               payload[:tool_config] = tool_cfg if tool_cfg
               additional = build_additional_fields(canonical)
@@ -43,38 +44,32 @@ module Legion
               return {} unless canonical.params
 
               cfg = {
-                max_tokens: canonical.params.max_tokens,
+                # B18: the single max_tokens owner (params member, then the
+                # shared dialect decision) — no model-object fork.
+                max_tokens: RenderDefaults.max_tokens(canonical.params, target: :converse),
                 temperature: canonical.params.temperature
               }
               cfg[:top_p] = canonical.params.top_p if canonical.params.top_p
-              if canonical.params.top_k && anthropic_model?(model_from_request(canonical))
+              if canonical.params.top_k &&
+                 ThinkingModes.anthropic_model?(model_from_request(canonical))
                 cfg[:top_k] =
                   canonical.params.top_k
               end
               cfg.compact
             end
 
+            # B2: one shared thinking wire builder (ThinkingModes) — the
+            # local budget fabrication (1024) is deleted.
             def build_additional_fields(canonical)
-              return nil unless canonical.thinking
-              return nil if ThinkingModes.known_non_thinking?(model_from_request(canonical))
-
-              budget = canonical_thinking_budget(canonical) || (DEFAULT_MAX_TOKENS / 4)
-              { thinking: { type: 'enabled', budget_tokens: budget } }
+              wire = ThinkingModes.thinking_wire(
+                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params
+              )
+              wire ? { thinking: wire } : nil
             end
 
             def normalize_geo_prefix(value)
               candidate = value.to_s.downcase
               %w[us eu ap].include?(candidate) ? candidate : 'us'
-            end
-
-            def canonical_thinking_budget(canonical)
-              return nil unless canonical.thinking
-
-              if canonical.thinking.respond_to?(:budget) && canonical.thinking.budget
-                canonical.thinking.budget
-              elsif canonical.params.respond_to?(:max_thinking_tokens) && canonical.params.max_thinking_tokens
-                canonical.params.max_thinking_tokens
-              end
             end
 
             def build_converse_tool_config(canonical)
@@ -102,7 +97,9 @@ module Legion
 
             def render_invoke_model(canonical)
               body = {
-                max_tokens: canonical.params&.max_tokens || DEFAULT_MAX_TOKENS,
+                # B18: the single max_tokens owner (params member, then the
+                # shared dialect decision) — no model-object fork.
+                max_tokens: RenderDefaults.max_tokens(canonical.params, target: :invoke_model),
                 messages: render_invoke_messages(canonical.messages),
                 anthropic_version: 'bedrock-2023-05-31'
               }
@@ -119,28 +116,34 @@ module Legion
               body.compact
             end
 
+            # B2: one shared thinking wire builder (ThinkingModes) — the
+            # local budget fabrication (1024) is deleted.
             def build_invoke_thinking(canonical)
-              return nil unless canonical.thinking
-              return nil if ThinkingModes.known_non_thinking?(model_from_request(canonical))
-
-              budget = canonical_thinking_budget(canonical) || (DEFAULT_MAX_TOKENS / 4)
-              { type: 'enabled', budget_tokens: budget }
+              ThinkingModes.thinking_wire(
+                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params
+              )
             end
 
             def render_invoke_system(canonical)
-              sys = canonical.system
-              return nil if sys.nil? || sys.to_s.strip.empty?
+              sys = system_text(canonical)
+              return nil unless sys
 
-              if sys.is_a?(Array)
-                sys.map do |block|
-                  wire = { type: 'text', text: (block[:text] || block['text'] || block.to_s).to_s }
-                  cc = block[:cache_control] || block['cache_control']
-                  wire[:cache_control] = cc if cc
-                  wire
-                end
-              else
-                [{ type: 'text', text: sys.to_s }]
-              end
+              [{ type: 'text', text: sys }]
+            end
+
+            # B5: the system MEMBER is the single system source and its
+            # canonical shape is String | nil — any other shape (an Array of
+            # blocks is the legacy bridge spelling) is poison: request
+            # construction folds it into a single String, the translator does
+            # not re-source or tolerate it.
+            def system_text(canonical)
+              sys = canonical.system
+              return nil if sys.nil?
+
+              raise ArgumentError, 'bedrock.render_request: the system member must be a String' \
+                unless sys.is_a?(::String)
+
+              sys.strip.empty? ? nil : sys
             end
 
             def build_invoke_tools(canonical)
