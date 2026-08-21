@@ -203,6 +203,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       modalities_input: %w[text image],
       modalities_output: %w[text]
     )
+    # M6: the instance identity is CARRIED in (the gem's default instance
+    # label) — no node-name derivation.
     builder = Legion::Extensions::Llm::RegistryEventBuilder.new(
       provider_family: :bedrock, provider_instance: 'default'
     )
@@ -211,6 +213,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(event.to_h).to include(event_type: :offering_available)
     expect(event.to_h.dig(:offering, :provider_family)).to eq(:bedrock)
     expect(event.to_h.dig(:offering, :model)).to eq('anthropic.claude-3-haiku-20240307-v1:0')
+    # The carried identity survives into the event (offering + runtime).
+    expect(event.to_h.dig(:offering, :provider_instance)).to eq('default')
+    expect(event.to_h.dig(:runtime, :node)).to eq('default')
   end
 
   it 'renders Converse requests and parses assistant responses' do
