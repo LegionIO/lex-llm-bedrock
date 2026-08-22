@@ -11,14 +11,18 @@ require 'legion/extensions/llm'
 begin
   require 'legion/extensions/helpers/lex'
 rescue LoadError
+  require 'legion/logging/helper'
   # The module is host-platform; in isolated gem tests mix in the real
   # legion-settings Helper so `settings` exercises the genuine 1.4.2
-  # nested-path resolution ([:extensions][:llm][:bedrock]).
+  # nested-path resolution ([:extensions][:llm][:bedrock]), and the real
+  # legion-logging Helper so `log` and `handle_exception` behave as in the
+  # daemon (logged, never re-raised).
   module Legion
     module Extensions
       module Helpers
         module Lex
           include ::Legion::Settings::Helper
+          include ::Legion::Logging::Helper
         end
       end
     end

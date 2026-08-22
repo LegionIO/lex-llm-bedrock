@@ -8,7 +8,8 @@ require 'legion/extensions/llm/bedrock/provider'
 require 'legion/extensions/llm/bedrock/translator'
 require 'legion/extensions/llm/bedrock/version'
 require 'legion/logging/helper'
-require 'legion/extensions/llm/bedrock/actors/discovery_refresh'
+require 'legion/extensions/llm/bedrock/helpers/callable'
+require 'legion/extensions/llm/bedrock/actors/discovery'
 
 module Legion
   module Extensions
@@ -73,8 +74,11 @@ module Legion
           discover_claude_bearer(candidates)
           discover_env_sigv4(candidates)
           discover_broker(candidates)
+          # enabled: false is a skip, not a credential: a disabled instance is
+          # never claimed (the discovery pipeline reads this method as the
+          # single claimable source).
           CredentialSources.dedup_credentials(candidates)
-                           .reject { |_, config| unresolved_credential?(config) }
+                           .reject { |_, config| config[:enabled] == false || unresolved_credential?(config) }
                            .transform_values do |config|
             sanitized = sanitize_instance_config(config)
             sanitized[:capabilities] ||= DEFAULT_CAPABILITIES.dup

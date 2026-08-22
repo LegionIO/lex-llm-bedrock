@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/extensions/llm/bedrock/callable'
+require 'legion/extensions/llm/bedrock/helpers/callable'
 
-RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable do
+RSpec.describe Legion::Extensions::Llm::Bedrock::Helpers::Callable do
   it 'renders a folded leading system message in the native Bedrock system field' do
     runtime_client = instance_double(Aws::BedrockRuntime::Client)
     allow(runtime_client).to receive(:converse).and_return(

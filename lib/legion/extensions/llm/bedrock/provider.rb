@@ -33,7 +33,7 @@ module Legion
         # All private helpers are extracted into dedicated modules under provider/:
         #   ClassMethods     — class-level slug, caps, resolve_model_id, inference_profile_id
         #   ClientHelpers    — AWS SDK client construction, credentials, low-level parsing
-        #   ModelCatalogHelpers — health/readiness, list_models, discover_offerings, offerings
+        #   ModelCatalogHelpers — health/readiness, fetch_model_detail
         #   ConverseHelpers  — Converse API request formatting, response parsing, streaming
         #   InvokeModelHelpers — invoke_model path for Anthropic thinking/tools
         #   DispatchHelpers  — public chat/stream/count_tokens/embed/complete

@@ -15,20 +15,21 @@ require 'legion/extensions/llm/capabilities'
 require 'legion/extensions/llm/fleet/worker_execution'
 require 'legion/extensions/llm/fleet/protocol'
 
-# Production callable and production discovery actor. The actor file loads via
-# the spec_helper actor-runtime stand-ins (the LegionIO platform is not a gem
-# dependency); the harness delegates identity derivation, draft building, and
-# safe readiness to the PRODUCTION actor code paths instead of duplicating
-# them (a duplicated builder would drift from the actor silently).
-require 'legion/extensions/llm/bedrock/callable'
-require 'legion/extensions/llm/bedrock/actors/discovery_refresh'
+# Production callable and production discovery runner. The actor file loads
+# via the spec_helper actor-runtime stand-ins (the LegionIO platform is not a
+# gem dependency); the harness delegates identity derivation, draft building,
+# and safe readiness to the PRODUCTION runner code paths instead of
+# duplicating them (a duplicated builder would drift from the runner
+# silently).
+require 'legion/extensions/llm/bedrock/helpers/callable'
+require 'legion/extensions/llm/bedrock/runners/discovery'
 
 # Harness class for Bedrock SSOT v3 conformance testing.
 class BedrockSsotHarness
-  # bedrock_stub_responses keeps the production callable's and the actor's
+  # bedrock_stub_responses keeps the production callable's and the runner's
   # AWS SDK clients fully offline: the exact fleet dispatch test drives a real
-  # BedrockCallable -> Bedrock::Provider -> stubbed Converse round-trip, and
-  # safe_readiness drives the actor's real check_health against stubs.
+  # Helpers::Callable -> Bedrock::Provider -> stubbed Converse round-trip,
+  # and safe_readiness drives the runner's real check_health against stubs.
   #
   # Instance identity is the operator's CONFIG NAME (the key the router looks
   # up in instances.<name>); the derived region/credential id is the secondary
@@ -54,11 +55,11 @@ class BedrockSsotHarness
   def provider_family = :bedrock
   def instance_configs = NAMED_INSTANCE_CONFIGS.values
 
-  # The production actor — instantiated via the spec_helper Every stand-in
-  # (no timer). Its private builders are the single source of draft/evidence
-  # construction; the harness only supplies test data (the model summary).
-  def ssot_actor
-    @ssot_actor ||= Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh.new
+  # The production discovery runner module — stateless, no .new. Its public
+  # builders are the single source of draft/evidence construction; the
+  # harness only supplies test data (the model summary).
+  def ssot_runner
+    Legion::Extensions::Llm::Bedrock::Runners::Discovery
   end
 
   # The operator's CONFIG NAME — the InstanceKey.instance_id the router keys
@@ -78,26 +79,27 @@ class BedrockSsotHarness
   # The PRODUCTION callable — it implements the fleet dispatch operations by
   # delegating to a per-instance Bedrock::Provider.
   def build_callable(instance_config:)
-    Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable.new(
+    Legion::Extensions::Llm::Bedrock::Helpers::Callable.new(
       instance_cfg: instance_config, logger: Logger.new(File::NULL)
     )
   end
 
-  # Production draft path: the actor's own build_offering_draft (operation
-  # evidence, capability evidence, context window, quota domains, metadata).
-  # (The kit also passes callable: — accepted and ignored; the production
-  # draft path does not consult it.)
+  # Production draft path: the runner's public build_offering_draft
+  # (operation evidence, capability evidence, context window, quota domains,
+  # metadata). (The kit also passes callable: — accepted and ignored; the
+  # production draft path does not consult it.)
   def build_offering_drafts(tier: :cloud, instance_config: nil, **)
     config = (instance_config || instance_configs.first).merge(tier: tier)
-    [ssot_actor.send(:build_offering_draft,
-                     model_id: MODEL_ID, summary: model_summary,
-                     instance_cfg: config, instance_key: instance_key_for(config))]
+    [ssot_runner.build_offering_draft(
+      instance_cfg: config, instance_key: instance_key_for(config),
+      model_id: MODEL_ID, model_data: model_summary
+    )]
   end
 
-  # Production readiness path: the actor's own check_health (a stubbed
+  # Production readiness path: the runner's own check_health (a stubbed
   # ListFoundationModels control-plane call — safe in any environment).
   def safe_readiness(instance_config:, **)
-    ssot_actor.send(:check_health, instance_cfg: instance_config)
+    ssot_runner.check_health(instance_cfg: instance_config)
   end
 
   def inference_call_count(callable:)
@@ -259,20 +261,23 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     it 'reproduces IDs after restart (identity is deterministic from inputs)' do
       config = ssot_harness.instance_configs[0]
       first_run = bring_up_instance(config)
-      first_offering_id = registry.snapshot.offerings_for(instance_key: first_run[:key]).first.offering_id
       first_lane_id = registry.snapshot.lanes_for(instance_key: first_run[:key]).first.lane_id
 
       registry.reset!
       second_run = bring_up_instance(config)
-      second_offering_id = registry.snapshot.offerings_for(instance_key: second_run[:key]).first.offering_id
       second_lane_id = registry.snapshot.lanes_for(instance_key: second_run[:key]).first.lane_id
 
-      expect(second_offering_id).to eq(first_offering_id)
+      # 0.8.0: there is no separate offering id — the offering IS the lane,
+      # keyed by the 5 tuple.
       expect(second_lane_id).to eq(first_lane_id)
     end
   end
 
-  # ─── Tier change does NOT change lane/offering identity ────────────────────
+  # ─── Tier change: the 5-tuple fact ─────────────────────────────────────────
+  # The lane id is `tier:provider_family:instance_id:type:model` — the tier
+  # IS an identity member (D2: an offering IS the 5-tuple lane). A tier
+  # change therefore republishes the lane under the new tier tuple; the
+  # model and instance identity it preserves are the remaining members.
 
   describe 'tier change and identity preservation' do
     def bring_up_with_tier(config, tier:)
@@ -302,12 +307,18 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       { publisher: publisher, key: key, callable: callable, token: token, drafts: drafts }
     end
 
-    it 'preserves offering_id and lane_id when tier changes' do
+    it 'republishes the lane under the new tier 5-tuple, preserving model and instance identity' do
       config = ssot_harness.instance_configs[0]
       context = bring_up_with_tier(config, tier: :cloud)
 
-      before_offering = registry.snapshot.offerings_for(instance_key: context[:key]).first
       before_lane = registry.snapshot.lanes_for(instance_key: context[:key]).first
+      instance_id = ssot_harness.instance_id(instance_config: config)
+      expected_before = Legion::Extensions::Llm::Inventory::Identity.compose_lane_id(
+        tier: :cloud, provider_family: :bedrock, instance_id: instance_id,
+        type: Legion::Extensions::Llm::Taxonomies.lane_type_for(operation: before_lane.operation),
+        model: before_lane.model
+      )
+      expect(before_lane.lane_id).to eq(expected_before)
 
       frontier_drafts = ssot_harness.build_offering_drafts(
         instance_config: config, callable: context[:callable], tier: :frontier
@@ -320,12 +331,20 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
         sequence: 1
       )
 
-      after_offering = registry.snapshot.offerings_for(instance_key: context[:key]).first
       after_lane = registry.snapshot.lanes_for(instance_key: context[:key]).first
+      expected_after = Legion::Extensions::Llm::Inventory::Identity.compose_lane_id(
+        tier: :frontier, provider_family: :bedrock, instance_id: instance_id,
+        type: Legion::Extensions::Llm::Taxonomies.lane_type_for(operation: after_lane.operation),
+        model: after_lane.model
+      )
 
-      expect(after_offering.offering_id).to eq(before_offering.offering_id)
-      expect(after_lane.lane_id).to eq(before_lane.lane_id)
-      expect(after_offering.tier).to eq(:frontier)
+      # The 5 tuple reproduces from the record's own fields, and the tier
+      # change moved ONLY the tier member — model and instance are preserved.
+      expect(after_lane.lane_id).to eq(expected_after)
+      expect(after_lane.lane_id).not_to eq(before_lane.lane_id)
+      expect(after_lane.model).to eq(before_lane.model)
+      expect(after_lane.instance_id).to eq(before_lane.instance_id)
+      expect(registry.snapshot.lanes_for(instance_key: context[:key])).to all(have_attributes(tier: :frontier))
     end
   end
 
@@ -518,15 +537,15 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   # ─── No Legion::LLM reverse dependency ────────────────────────────────────
 
   describe 'dependency isolation' do
-    it 'does not require Legion::LLM in the discovery actor' do
+    it 'does not require Legion::LLM in the discovery actor or runner' do
       project_root = File.expand_path('../../../..', __dir__)
-      actor_file = File.read(
-        File.join(project_root, 'lib/legion/extensions/llm/bedrock/actors/discovery_refresh.rb')
-      )
-      expect(actor_file).not_to match(/\bLegion::LLM\b/)
+      %w[actors/discovery.rb runners/discovery.rb].each do |relative|
+        source = File.read(File.join(project_root, 'lib/legion/extensions/llm/bedrock', relative))
+        expect(source).not_to match(/\bLegion::LLM\b/), "lib/legion/extensions/llm/bedrock/#{relative} references Legion::LLM"
+      end
     end
 
-    it 'BedrockCallable does not reference Legion::LLM' do
+    it 'Helpers::Callable does not reference Legion::LLM' do
       callable = ssot_harness.build_callable(instance_config: ssot_harness.instance_configs[0])
       outcome = callable.normalize_dispatch_error(error: RuntimeError.new('test'))
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)
@@ -574,9 +593,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     end
   end
 
-  # ─── BedrockCallable direct contract ──────────────────────────────────────
+  # ─── Helpers::Callable direct contract ─────────────────────────────────────
 
-  describe Legion::Extensions::Llm::Bedrock::Actor::BedrockCallable do
+  describe Legion::Extensions::Llm::Bedrock::Helpers::Callable do
     let(:callable) do
       described_class.new(
         instance_cfg: ssot_harness.instance_configs[0],
@@ -672,7 +691,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   # ─── 0.8.0 canonical boundary kit (B1/B2) ─────────────────────────────────
   # The shared kit (09) run against the REAL callable boundary: the production
-  # BedrockCallable -> Bedrock::Provider round-trip. The AWS SDK transport is
+  # Helpers::Callable -> Bedrock::Provider round-trip. The AWS SDK transport is
   # stubbed (the gem's standing pattern); the converse stream fake yields
   # realistic wire events so the provider's real stream parser runs. Only the
   # canonical boundary must be real — and it is (the provider classes, not a

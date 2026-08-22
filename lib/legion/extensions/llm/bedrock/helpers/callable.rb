@@ -10,7 +10,7 @@ module Legion
   module Extensions
     module Llm
       module Bedrock
-        module Actor
+        module Helpers
           # Per-instance dispatch callable for a Bedrock provider instance.
           #
           # Wraps a per-instance Bedrock::Provider built from the instance
@@ -28,7 +28,7 @@ module Legion
           # / params.max_tokens (a raw Hash would NoMethodError).
           # Provider and AWS SDK errors propagate unchanged so
           # normalize_dispatch_error can classify them.
-          class BedrockCallable
+          class Callable
             # Keys the base Provider exposes as named kwargs for the completion
             # operations. Anything else the fleet passes (sampling scalars,
             # `temperature` — a Canonical::Params member, 05 O4) is folded into
