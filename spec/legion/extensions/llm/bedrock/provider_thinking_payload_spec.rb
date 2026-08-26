@@ -70,7 +70,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
 
     it 'OMITS thinking for a present-but-disabled config (no effort, no budget)' do
       result = thinking_modes.thinking_wire(
-        thinking: canonical::Thinking::Config.build,
+        thinking: canonical::Thinking::Config.build(enabled: false),
         model_id: 'anthropic.claude-opus-4-5-20251101-v1:0'
       )
 
@@ -94,7 +94,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
                            messages: [], model: 'anthropic.claude-opus-4-5-20251101-v1:0',
                            tools: nil, tool_prefs: nil,
                            thinking: canonical::Thinking::Config.build(budget: 2048),
-                           params: canonical::Params.build(max_tokens: 100))
+                           params: canonical::Params.build(max_tokens: 4096))
 
       expect(body[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
     end

@@ -71,7 +71,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
     it 'selects :converse for anthropic model with a present-but-disabled thinking config (B1)' do
       req = canonical::Request.build(
         messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hello')])],
-        thinking: canonical::Thinking::Config.build,
+        thinking: canonical::Thinking::Config.build(enabled: false),
         metadata: { model: 'anthropic.claude-sonnet-4' }
       )
       expect(translator.target_for(req)).to eq(:converse)

@@ -59,10 +59,12 @@ module Legion
             end
 
             # B2: one shared thinking wire builder (ThinkingModes) — the
-            # local budget fabrication (1024) is deleted.
+            # local budget fabrication (1024) is deleted. Budget is reconciled
+            # against effective max_tokens so budget_tokens < max_tokens holds.
             def build_additional_fields(canonical)
               wire = ThinkingModes.thinking_wire(
-                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params
+                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params,
+                effective_max_tokens: RenderDefaults.max_tokens(canonical.params, target: :converse)
               )
               wire ? { thinking: wire } : nil
             end
@@ -117,10 +119,12 @@ module Legion
             end
 
             # B2: one shared thinking wire builder (ThinkingModes) — the
-            # local budget fabrication (1024) is deleted.
+            # local budget fabrication (1024) is deleted. Budget is reconciled
+            # against effective max_tokens so budget_tokens < max_tokens holds.
             def build_invoke_thinking(canonical)
               ThinkingModes.thinking_wire(
-                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params
+                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params,
+                effective_max_tokens: RenderDefaults.max_tokens(canonical.params, target: :invoke_model)
               )
             end
 

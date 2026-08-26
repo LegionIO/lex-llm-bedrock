@@ -127,8 +127,9 @@ module Legion
             # ValidationException shape) is deleted.
             def build_invoke_model_body(messages:, model:, tools: {}, tool_prefs: nil, system: nil,
                                         thinking: nil, params: nil)
+              effective_mt = RenderDefaults.max_tokens(params, target: :invoke_model)
               body = {
-                max_tokens: RenderDefaults.max_tokens(params, target: :invoke_model),
+                max_tokens: effective_mt,
                 messages: format_invoke_model_messages(messages),
                 anthropic_version: 'bedrock-2023-05-31'
               }
@@ -139,7 +140,9 @@ module Legion
                 body[:tools] = tool_format[:tools]
                 body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
               end
-              thinking_cfg = ThinkingModes.thinking_wire(thinking:, model_id: model, params:)
+              thinking_cfg = ThinkingModes.thinking_wire(
+                thinking:, model_id: model, params:, effective_max_tokens: effective_mt
+              )
               body[:thinking] = thinking_cfg if thinking_cfg
               body
             end

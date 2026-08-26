@@ -28,6 +28,14 @@ module Legion
         module ThinkingModes
           module_function
 
+          # Minimum thinking budget Anthropic will accept (API floor).
+          MINIMUM_BUDGET = 1024
+
+          # Tokens reserved for actual model output when clamping the thinking
+          # budget against max_tokens. Ensures max_tokens > budget_tokens holds
+          # with room for at least a short reply.
+          OUTPUT_RESERVE = 128
+
           # Model-id fragments for Claude families that support explicit budgeted
           # extended thinking via { type: 'enabled', budget_tokens: N }.
           BUDGETED_THINKING_FRAGMENTS = %w[
@@ -95,17 +103,45 @@ module Legion
           # gets its SSOT-mapped budget instead of a fabricated 1024, and a
           # budget-less { type: 'enabled' } (the Bedrock ValidationException
           # shape) is unreachable: an enabled config always resolves a budget.
-          def thinking_wire(thinking:, model_id:, params: nil)
+          #
+          # Budget/max_tokens reconciliation: Bedrock requires max_tokens >
+          # budget_tokens. When effective_max_tokens is provided and the
+          # resolved budget would violate that constraint, the budget is
+          # clamped to (max_tokens - OUTPUT_RESERVE) with a floor of
+          # MINIMUM_BUDGET. If max_tokens is too small to accommodate even the
+          # minimum budget, thinking is omitted (nil) to keep the request valid
+          # rather than silently overriding the client's max_output_tokens cap.
+          def thinking_wire(thinking:, model_id:, effective_max_tokens: nil, **)
             return nil unless thinking_enabled?(thinking)
             return nil if known_non_thinking?(model_id)
 
-            budget = thinking.resolved_budget || params&.max_thinking_tokens
+            budget = thinking.resolved_budget
             if budget.nil?
               raise ArgumentError,
                     "bedrock.thinking_wire: enabled thinking has no resolvable budget_tokens for #{model_id}"
             end
 
+            budget = reconcile_budget(budget, effective_max_tokens)
+            return nil unless budget
+
             { type: 'enabled', budget_tokens: budget }
+          end
+
+          # Clamp budget so that budget_tokens < effective_max_tokens (Bedrock
+          # wire constraint). Returns the reconciled budget Integer, or nil when
+          # max_tokens is too small to fit even MINIMUM_BUDGET.
+          def reconcile_budget(budget, effective_max_tokens)
+            return budget unless effective_max_tokens && budget >= effective_max_tokens
+
+            clamped = [budget, effective_max_tokens - OUTPUT_RESERVE].min
+            clamped = [clamped, MINIMUM_BUDGET].max
+
+            # If after applying the floor the budget still violates the
+            # constraint, thinking cannot fit — omit it to keep the request
+            # valid (respects the client's explicit max_output_tokens cap).
+            return nil if clamped >= effective_max_tokens
+
+            clamped
           end
         end
       end

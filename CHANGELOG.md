@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.7] - 2026-08-25
+
+### Fixed
+- **Budget/max_tokens reconciliation** — `ThinkingModes.thinking_wire` now clamps `budget_tokens` so it is strictly less than the effective `max_tokens` sent on the wire (Bedrock constraint: `max_tokens > budget_tokens`). When Codex sends `effort=high` (resolving to `budget_tokens=16384`) but the client's `max_output_tokens` is only 2048, the budget is clamped to `max_tokens - OUTPUT_RESERVE` (floor: 1024) instead of producing an HTTP 400 `ValidationException`. If `max_tokens` is too small to fit even the minimum budget, thinking is omitted to keep the request valid rather than overriding the client's cap.
+- **Removed latent NoMethodError** — Dropped the `|| params&.max_thinking_tokens` fallback in `thinking_wire`; `Canonical::Params#max_thinking_tokens` was deleted in lex-llm 0.8.3 and `&.` does not guard a deleted method on a non-nil receiver. `thinking.resolved_budget` is the sole budget source.
+
 ## [0.5.6] - 2026-08-19
 
 ### Changed
