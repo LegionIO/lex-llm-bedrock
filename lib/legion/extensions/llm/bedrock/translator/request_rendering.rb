@@ -68,11 +68,9 @@ module Legion
               mid = model_from_request(canonical)
               adaptive = ThinkingModes.adaptive_wire(thinking: canonical.thinking, model_id: mid)
               if adaptive
-                return {
-                  thinking: adaptive[:thinking],
-                  output_config: adaptive[:output_config],
-                  anthropic_beta: [adaptive[:beta_header]]
-                }
+                result = { thinking: adaptive[:thinking], anthropic_beta: [adaptive[:beta_header]] }
+                result[:output_config] = adaptive[:output_config] if adaptive[:output_config]
+                return result
               end
 
               wire = ThinkingModes.thinking_wire(
@@ -141,7 +139,7 @@ module Legion
               adaptive = ThinkingModes.adaptive_wire(thinking: canonical.thinking, model_id: mid)
               if adaptive
                 body[:thinking] = adaptive[:thinking]
-                body[:output_config] = adaptive[:output_config]
+                body[:output_config] = adaptive[:output_config] if adaptive[:output_config]
                 body[:anthropic_beta] = Array(body[:anthropic_beta]) | [adaptive[:beta_header]]
               else
                 thinking_cfg = ThinkingModes.thinking_wire(

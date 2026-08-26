@@ -48,11 +48,9 @@ module Legion
             def bedrock_additional_fields(thinking, model:)
               adaptive = ThinkingModes.adaptive_wire(thinking:, model_id: model)
               if adaptive
-                {
-                  thinking: adaptive[:thinking],
-                  output_config: adaptive[:output_config],
-                  anthropic_beta: [adaptive[:beta_header]]
-                }
+                result = { thinking: adaptive[:thinking], anthropic_beta: [adaptive[:beta_header]] }
+                result[:output_config] = adaptive[:output_config] if adaptive[:output_config]
+                result
               else
                 wire = ThinkingModes.thinking_wire(thinking:, model_id: model)
                 wire ? { thinking: wire } : nil

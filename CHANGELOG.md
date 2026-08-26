@@ -3,7 +3,7 @@
 ## [0.5.8] - 2026-08-25
 
 ### Added
-- **Model-aware adaptive/effort thinking wire** — Claude opus-4-6, opus-4-7, opus-4-8, and sonnet-4-6 on Bedrock now emit `{ type: 'adaptive' }` + `output_config: { effort: <low|medium|high> }` with the `effort-2025-11-24` beta header, instead of the budgeted `{ type: 'enabled', budget_tokens: N }` shape which these models reject with `ValidationException`. Effort is derived from the canonical `Thinking::Config#resolved_effort` and clamped to Bedrock's `low/medium/high` enum. Both dispatch paths (invoke_model and Converse) emit the correct wire shape based on model classification. Precedence logic ensures `claude-opus-4-7` matches adaptive before `claude-opus-4` matches budgeted.
+- **Model-aware adaptive/effort thinking wire** — Claude opus-4-6, opus-4-7, opus-4-8, opus-5, sonnet-4-6, and sonnet-5 on Bedrock now emit `{ type: 'adaptive' }` + `output_config: { effort: <low|medium|high|xhigh|max> }` with the `effort-2025-11-24` beta header, instead of the budgeted `{ type: 'enabled', budget_tokens: N }` shape which these models reject with `ValidationException`. Effort is passed through directly from the canonical `Thinking::Config#resolved_effort` (the full ladder maps 1:1); `none` or nil effort omits `output_config` so the API defaults to high. Both dispatch paths (invoke_model and Converse) emit the correct wire shape based on model classification. Precedence logic ensures `claude-opus-4-7` matches adaptive before `claude-opus-4` matches budgeted.
 
 ## [0.5.7] - 2026-08-25
 

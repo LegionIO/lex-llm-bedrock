@@ -16,12 +16,15 @@ module Legion
         # 1. BUDGETED (Claude 3.7, sonnet-4 base, opus-4 base, opus-4-5, haiku-4):
         #    { type: 'enabled', budget_tokens: N }
         #
-        # 2. ADAPTIVE (Claude opus-4-6, opus-4-7, opus-4-8, sonnet-4-6):
-        #    { type: 'adaptive' } + output_config: { effort: <low|medium|high> }
+        # 2. ADAPTIVE (Claude opus-4-6/4-7/4-8/5, sonnet-4-6/5):
+        #    { type: 'adaptive' } + output_config: { effort: <low|medium|high|xhigh|max> }
         #    Gated by beta header 'effort-2025-11-24' in the anthropic_beta list.
         #    These models REJECT { type: 'enabled', budget_tokens: N } with
         #    `ValidationException: "thinking.type.enabled" is not supported for
         #    this model. Use "thinking.type.adaptive" and "output_config.effort"`.
+        #    The effort value is passed through directly from the canonical
+        #    Thinking::Config#resolved_effort (the full ladder matches 1:1).
+        #    'none' or nil effort → omit output_config (API defaults to high).
         #
         # PRECEDENCE: adaptive fragments are checked BEFORE budgeted because
         # `claude-opus-4` (budgeted) is a substring of `claude-opus-4-7`
@@ -52,7 +55,9 @@ module Legion
             claude-opus-4-6
             claude-opus-4-7
             claude-opus-4-8
+            claude-opus-5
             claude-sonnet-4-6
+            claude-sonnet-5
           ].freeze
 
           # Model-id fragments for Claude families that support explicit budgeted
@@ -64,16 +69,10 @@ module Legion
             claude-haiku-4
           ].freeze
 
-          # Bedrock effort enum — maps from Canonical resolved_effort to the
-          # Bedrock wire value. Bedrock accepts only low/medium/high.
-          EFFORT_MAP = {
-            'none' => 'low',
-            'low' => 'low',
-            'medium' => 'medium',
-            'high' => 'high',
-            'xhigh' => 'high',
-            'max' => 'high'
-          }.freeze
+          # Valid Bedrock effort values — the canonical effort ladder
+          # (low|medium|high|xhigh|max) maps 1:1 to the Bedrock wire.
+          # 'none' is NOT a valid Bedrock effort; it means "omit effort".
+          VALID_EFFORTS = %w[low medium high xhigh max].freeze
 
           # @return [Boolean] true when the model uses adaptive thinking + effort.
           # Checked BEFORE budgeted_thinking? to ensure precedence.
@@ -173,9 +172,13 @@ module Legion
           end
 
           # Full adaptive thinking descriptor for a model that requires the
-          # adaptive/effort wire. Returns a Hash with :thinking, :output_config,
-          # and :beta_header keys — or nil when thinking is not enabled or the
-          # model is not adaptive.
+          # adaptive/effort wire. Returns a Hash with :thinking, :beta_header,
+          # and optionally :output_config — or nil when thinking is not enabled
+          # or the model is not adaptive.
+          #
+          # When resolved_effort is 'none' or nil, output_config is OMITTED
+          # (the API defaults to high). The effort ladder (low|medium|high|
+          # xhigh|max) is passed through 1:1 — no clamping.
           #
           # The caller is responsible for placing each key at the correct wire
           # position (invoke_model: top-level fields + anthropic_beta array;
@@ -184,20 +187,20 @@ module Legion
             return nil unless thinking_enabled?(thinking)
             return nil unless adaptive_thinking?(model_id)
 
-            effort = map_effort(thinking.resolved_effort)
-            {
-              thinking: { type: 'adaptive' },
-              output_config: { effort: effort },
-              beta_header: EFFORT_BETA_HEADER
-            }
+            effort = wire_effort(thinking.resolved_effort)
+            result = { thinking: { type: 'adaptive' }, beta_header: EFFORT_BETA_HEADER }
+            result[:output_config] = { effort: effort } if effort
+            result
           end
 
-          # Maps a Canonical resolved_effort string to the Bedrock wire effort
-          # enum (low/medium/high). Falls back to 'high' for unknown values.
-          def map_effort(resolved_effort)
-            return 'high' if resolved_effort.nil?
+          # Resolves the Bedrock wire effort value from a canonical
+          # resolved_effort string. Returns the effort string for the wire, or
+          # nil when effort should be omitted (none / nil → API default = high).
+          # The canonical ladder (low|medium|high|xhigh|max) passes through 1:1.
+          def wire_effort(resolved_effort)
+            return nil if resolved_effort.nil? || resolved_effort == 'none'
 
-            EFFORT_MAP.fetch(resolved_effort, 'high')
+            resolved_effort
           end
 
           # Clamp budget so that budget_tokens < effective_max_tokens (Bedrock

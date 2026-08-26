@@ -162,11 +162,18 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do # adaptive thinking
         expect(wire[:output_config]).to eq({ effort: 'low' })
       end
 
-      it 'maps effort=xhigh to high for invoke_model' do
+      it 'passes effort=xhigh through directly (no clamping) for invoke_model' do
         wire = translator.render_request(request_for('anthropic.claude-sonnet-4-6-20260601-v1:0', effort: 'xhigh'),
                                          target: :invoke_model)
 
-        expect(wire[:output_config]).to eq({ effort: 'high' })
+        expect(wire[:output_config]).to eq({ effort: 'xhigh' })
+      end
+
+      it 'passes effort=max through directly for invoke_model' do
+        wire = translator.render_request(request_for('anthropic.claude-opus-5-20270101-v1:0', effort: 'max'),
+                                         target: :invoke_model)
+
+        expect(wire[:output_config]).to eq({ effort: 'max' })
       end
 
       it 'still emits budgeted wire for opus-4-5 on invoke_model' do

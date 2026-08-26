@@ -145,12 +145,12 @@ module Legion
                 body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
               end
 
-              # Adaptive thinking path — emit { type: 'adaptive' }, output_config,
-              # and append the effort beta header to anthropic_beta.
+              # Adaptive thinking path — emit { type: 'adaptive' }, output_config
+              # (when effort is set), and append the effort beta header.
               adaptive = ThinkingModes.adaptive_wire(thinking:, model_id: model)
               if adaptive
                 body[:thinking] = adaptive[:thinking]
-                body[:output_config] = adaptive[:output_config]
+                body[:output_config] = adaptive[:output_config] if adaptive[:output_config]
                 body[:anthropic_beta] = Array(body[:anthropic_beta]) | [adaptive[:beta_header]]
               else
                 # Budgeted thinking path (existing behavior).
