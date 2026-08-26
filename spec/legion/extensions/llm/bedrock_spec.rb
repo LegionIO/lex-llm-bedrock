@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'stringio'
+require 'legion/extensions/llm/bedrock/runners/discovery'
 
 class FakeConverseStream
   def initialize(text:, usage:)
@@ -29,10 +30,7 @@ CANONICAL = Legion::Extensions::Llm::Canonical
 RSpec.describe Legion::Extensions::Llm::Bedrock do
   let(:provider) { described_class::Provider.new(bedrock_region: 'us-west-2', bedrock_stub_responses: true) }
   let(:message) { CANONICAL::Message.build(role: :user, content: 'hello') }
-  let(:model) do
-    Legion::Extensions::Llm::Model::Info.new(id: 'anthropic.claude-3-haiku-20240307-v1:0', provider: :bedrock,
-                                             metadata: { max_output_tokens: 2048 })
-  end
+  let(:model) { 'anthropic.claude-3-haiku-20240307-v1:0' }
   let(:runtime_client) { instance_double(Aws::BedrockRuntime::Client) }
   let(:bedrock_client) { instance_double(Aws::Bedrock::Client) }
 
@@ -68,10 +66,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   end
 
   describe 'offerings (07 C5: Registry-snapshot read path)' do
-    def ssot_actor
-      @ssot_actor ||= Legion::Extensions::Llm::Bedrock::Actor::DiscoveryRefresh.new
-    end
-
     # Activates one instance under the operator config name the base read path
     # keys on (provider_instance_id), with production writer drafts.
     def activate_default_instance(models)
@@ -85,11 +79,10 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       token = registry.claim_instance(instance_key: key, callable: Object.new, probe_request_handle: coordinator)
       probe = registry.readiness_probe_started(instance_key: key, publisher_token: token)
       offerings = models.map do |model_id|
-        ssot_actor.send(
-          :build_offering_draft,
+        Legion::Extensions::Llm::Bedrock::Runners::Discovery.build_offering_draft(
           model_id: model_id,
-          summary: { model_id: model_id, input_modalities: %w[TEXT], output_modalities: %w[TEXT],
-                     response_streaming_supported: true },
+          model_data: { model_id: model_id, input_modalities: %w[TEXT], output_modalities: %w[TEXT],
+                        response_streaming_supported: true },
           instance_cfg: { bedrock_region: 'us-west-2', bedrock_access_key_id: 'AKIAIOSFODNN7EXAMPLE1',
                           tier: :cloud },
           instance_key: key
@@ -110,7 +103,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
         %w[amazon.titan-embed-text-v2:0 anthropic.claude-3-haiku-20240307-v1:0].sort
       )
       expect(offerings.first.instance_key.instance_id).to eq('default')
-      expect(offerings.first).to be_a(Legion::Extensions::Llm::Inventory::OfferingRecord)
+      expect(offerings.first).to be_a(Legion::Extensions::Llm::Inventory::LaneRecord)
     end
 
     it 'returns no offerings for an instance that never claimed' do
@@ -153,69 +146,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
     expect(bedrock_client).not_to have_received(:list_foundation_models)
   end
 
-  it 'returns Model::Info from list_models with capabilities from modalities' do
-    allow(bedrock_client).to receive(:list_foundation_models).and_return(
-      response(
-        model_summaries: [
-          {
-            model_id: 'anthropic.claude-3-haiku-20240307-v1:0',
-            provider_name: 'Anthropic',
-            input_modalities: %w[TEXT IMAGE],
-            output_modalities: ['TEXT'],
-            response_streaming_supported: true
-          },
-          {
-            model_id: 'amazon.titan-embed-text-v2:0',
-            provider_name: 'Amazon',
-            input_modalities: ['TEXT'],
-            output_modalities: ['EMBEDDING'],
-            response_streaming_supported: false
-          }
-        ]
-      )
-    )
-
-    models = provider.list_models
-
-    chat_model = models.find { |m| m.id.include?('claude') }
-    embed_model = models.find { |m| m.id.include?('titan-embed') }
-
-    expect(chat_model).to be_a(Legion::Extensions::Llm::Model::Info)
-    expect(chat_model.provider).to eq(:bedrock)
-    expect(chat_model.capabilities).to include(:completion, :streaming, :vision)
-    expect(chat_model.modalities_input).to include(:text, :image)
-    expect(chat_model.modalities_output).to include(:text)
-
-    expect(embed_model.capabilities).to include(:embedding)
-    expect(embed_model.modalities_output).to include(:embedding)
-  end
-
   it 'does not ship a registry_publisher class method (SSOT v3: single publication path via DiscoveryRefresh)' do
     expect(described_class::Provider).not_to respond_to(:registry_publisher)
-  end
-
-  it 'builds sanitized lex-llm registry events via the base RegistryEventBuilder' do
-    model_info = Legion::Extensions::Llm::Model::Info.new(
-      id: 'anthropic.claude-3-haiku-20240307-v1:0',
-      name: 'claude-3-haiku',
-      provider: :bedrock,
-      capabilities: %i[completion streaming vision],
-      modalities_input: %w[text image],
-      modalities_output: %w[text]
-    )
-    # M6: the instance identity is CARRIED in (the gem's default instance
-    # label) — no node-name derivation.
-    builder = Legion::Extensions::Llm::RegistryEventBuilder.new(
-      provider_family: :bedrock, provider_instance: 'default'
-    )
-    event = builder.model_available(model_info, readiness: { ready: true })
-
-    expect(event.to_h).to include(event_type: :offering_available)
-    expect(event.to_h.dig(:offering, :provider_family)).to eq(:bedrock)
-    expect(event.to_h.dig(:offering, :model)).to eq('anthropic.claude-3-haiku-20240307-v1:0')
-    # The carried identity survives into the event (offering + runtime).
-    expect(event.to_h.dig(:offering, :provider_instance)).to eq('default')
-    expect(event.to_h.dig(:runtime, :node)).to eq('default')
   end
 
   it 'renders Converse requests and parses assistant responses' do
@@ -243,9 +175,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
   it 'renders Bedrock tool configuration for Converse' do
     # Use a non-Anthropic model to test Converse tool rendering directly
     # (Anthropic models with tools route through invoke_model)
-    llama_model = Legion::Extensions::Llm::Model::Info.new(
-      id: 'meta.llama3-2-11b-instruct-v1:0', provider: :bedrock, metadata: { max_output_tokens: 2048 }
-    )
+    llama_model = 'meta.llama3-2-11b-instruct-v1:0'
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
     )
@@ -407,9 +337,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
 
   it 'renders tool definitions without cache_control' do
     # Use a non-Anthropic model to test Converse tool definitions directly
-    llama_model = Legion::Extensions::Llm::Model::Info.new(
-      id: 'meta.llama3-2-11b-instruct-v1:0', provider: :bedrock, metadata: { max_output_tokens: 2048 }
-    )
+    llama_model = 'meta.llama3-2-11b-instruct-v1:0'
     allow(runtime_client).to receive(:converse).and_return(
       response(output: { message: { content: [{ text: 'done' }], role: 'assistant' } })
     )
