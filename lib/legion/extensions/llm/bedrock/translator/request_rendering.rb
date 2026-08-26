@@ -61,9 +61,22 @@ module Legion
             # B2: one shared thinking wire builder (ThinkingModes) — the
             # local budget fabrication (1024) is deleted. Budget is reconciled
             # against effective max_tokens so budget_tokens < max_tokens holds.
+            #
+            # Adaptive models emit thinking + output_config + beta header
+            # into additionalModelRequestFields.
             def build_additional_fields(canonical)
+              mid = model_from_request(canonical)
+              adaptive = ThinkingModes.adaptive_wire(thinking: canonical.thinking, model_id: mid)
+              if adaptive
+                return {
+                  thinking: adaptive[:thinking],
+                  output_config: adaptive[:output_config],
+                  anthropic_beta: [adaptive[:beta_header]]
+                }
+              end
+
               wire = ThinkingModes.thinking_wire(
-                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params,
+                thinking: canonical.thinking, model_id: mid, params: canonical.params,
                 effective_max_tokens: RenderDefaults.max_tokens(canonical.params, target: :converse)
               )
               wire ? { thinking: wire } : nil
@@ -112,8 +125,7 @@ module Legion
               tool_data = build_invoke_tools(canonical)
               body[:tools]       = tool_data[:tools]       if tool_data && tool_data[:tools]
               body[:tool_choice] = tool_data[:tool_choice] if tool_data && tool_data[:tool_choice]
-              thinking_cfg = build_invoke_thinking(canonical)
-              body[:thinking] = thinking_cfg if thinking_cfg
+              apply_invoke_thinking!(body, canonical)
               body[:stream] = true if canonical.stream
               body.compact
             end
@@ -121,11 +133,23 @@ module Legion
             # B2: one shared thinking wire builder (ThinkingModes) — the
             # local budget fabrication (1024) is deleted. Budget is reconciled
             # against effective max_tokens so budget_tokens < max_tokens holds.
-            def build_invoke_thinking(canonical)
-              ThinkingModes.thinking_wire(
-                thinking: canonical.thinking, model_id: model_from_request(canonical), params: canonical.params,
-                effective_max_tokens: RenderDefaults.max_tokens(canonical.params, target: :invoke_model)
-              )
+            #
+            # Adaptive models emit thinking + output_config + beta header as
+            # top-level fields in the invoke_model body.
+            def apply_invoke_thinking!(body, canonical)
+              mid = model_from_request(canonical)
+              adaptive = ThinkingModes.adaptive_wire(thinking: canonical.thinking, model_id: mid)
+              if adaptive
+                body[:thinking] = adaptive[:thinking]
+                body[:output_config] = adaptive[:output_config]
+                body[:anthropic_beta] = Array(body[:anthropic_beta]) | [adaptive[:beta_header]]
+              else
+                thinking_cfg = ThinkingModes.thinking_wire(
+                  thinking: canonical.thinking, model_id: mid, params: canonical.params,
+                  effective_max_tokens: RenderDefaults.max_tokens(canonical.params, target: :invoke_model)
+                )
+                body[:thinking] = thinking_cfg if thinking_cfg
+              end
             end
 
             def render_invoke_system(canonical)

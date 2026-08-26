@@ -40,9 +40,23 @@ module Legion
 
             # B2: one shared thinking wire builder (ThinkingModes) — the
             # Hash-read/fabricated-1024 path is deleted.
+            #
+            # Adaptive models emit { thinking: { type: 'adaptive' },
+            # output_config: { effort: ... }, anthropic_beta: [...] } into
+            # additionalModelRequestFields. Budgeted models emit only
+            # { thinking: { type: 'enabled', budget_tokens: N } }.
             def bedrock_additional_fields(thinking, model:)
-              wire = ThinkingModes.thinking_wire(thinking:, model_id: model)
-              wire ? { thinking: wire } : nil
+              adaptive = ThinkingModes.adaptive_wire(thinking:, model_id: model)
+              if adaptive
+                {
+                  thinking: adaptive[:thinking],
+                  output_config: adaptive[:output_config],
+                  anthropic_beta: [adaptive[:beta_header]]
+                }
+              else
+                wire = ThinkingModes.thinking_wire(thinking:, model_id: model)
+                wire ? { thinking: wire } : nil
+              end
             end
 
             # B21: the dead cache-control stub is deleted — Converse has no

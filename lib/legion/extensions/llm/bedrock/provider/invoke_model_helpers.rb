@@ -125,6 +125,10 @@ module Legion
             # wire shape has one builder (ThinkingModes) — the Hash-only read
             # that emitted a budget-less { type: 'enabled' } (the Bedrock
             # ValidationException shape) is deleted.
+            #
+            # Adaptive models (opus-4-6/4-7/4-8, sonnet-4-6) use a different
+            # thinking wire: { type: 'adaptive' } + output_config: { effort: }
+            # + 'effort-2025-11-24' in the anthropic_beta array.
             def build_invoke_model_body(messages:, model:, tools: {}, tool_prefs: nil, system: nil,
                                         thinking: nil, params: nil)
               effective_mt = RenderDefaults.max_tokens(params, target: :invoke_model)
@@ -140,10 +144,21 @@ module Legion
                 body[:tools] = tool_format[:tools]
                 body[:tool_choice] = tool_format[:tool_choice] if tool_format[:tool_choice]
               end
-              thinking_cfg = ThinkingModes.thinking_wire(
-                thinking:, model_id: model, params:, effective_max_tokens: effective_mt
-              )
-              body[:thinking] = thinking_cfg if thinking_cfg
+
+              # Adaptive thinking path — emit { type: 'adaptive' }, output_config,
+              # and append the effort beta header to anthropic_beta.
+              adaptive = ThinkingModes.adaptive_wire(thinking:, model_id: model)
+              if adaptive
+                body[:thinking] = adaptive[:thinking]
+                body[:output_config] = adaptive[:output_config]
+                body[:anthropic_beta] = Array(body[:anthropic_beta]) | [adaptive[:beta_header]]
+              else
+                # Budgeted thinking path (existing behavior).
+                thinking_cfg = ThinkingModes.thinking_wire(
+                  thinking:, model_id: model, params:, effective_max_tokens: effective_mt
+                )
+                body[:thinking] = thinking_cfg if thinking_cfg
+              end
               body
             end
 

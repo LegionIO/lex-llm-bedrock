@@ -312,11 +312,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
       expect(wire).not_to have_key(:output_config)
     end
 
-    it 'renders enabled+budget thinking for other budgeted-thinking Claude 4 models (opus-4)' do
+    it 'renders enabled+budget thinking for other budgeted-thinking Claude 4 models (opus-4-5)' do
       req = canonical::Request.build(
         messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
         thinking: { budget: 2048, effort: 'high' },
-        metadata: { model: 'anthropic.claude-opus-4-7' }
+        metadata: { model: 'anthropic.claude-opus-4-5-20251101-v1:0' }
       )
 
       wire = translator.render_request(req, target: :invoke_model)

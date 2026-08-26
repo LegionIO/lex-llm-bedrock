@@ -113,26 +113,26 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       )
     end
 
-    describe '#build_invoke_thinking' do
+    describe '#apply_invoke_thinking! (via render_request)' do
       it 'returns enabled+budget for a budgeted-thinking model (opus-4-5)' do
-        result = translator.send(:build_invoke_thinking,
-                                 request_for('anthropic.claude-opus-4-5-20251101-v1:0'))
+        wire = translator.render_request(request_for('anthropic.claude-opus-4-5-20251101-v1:0'),
+                                         target: :invoke_model)
 
-        expect(result).to eq({ type: 'enabled', budget_tokens: 2048 })
+        expect(wire[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
       end
 
       it 'returns enabled+budget for claude-sonnet-4' do
-        result = translator.send(:build_invoke_thinking,
-                                 request_for('anthropic.claude-sonnet-4-20250514-v1:0'))
+        wire = translator.render_request(request_for('anthropic.claude-sonnet-4-20250514-v1:0'),
+                                         target: :invoke_model)
 
-        expect(result).to eq({ type: 'enabled', budget_tokens: 2048 })
+        expect(wire[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
       end
 
-      it 'OMITS thinking (nil), never adaptive, for a non-thinking model (claude-3-haiku)' do
-        result = translator.send(:build_invoke_thinking,
-                                 request_for('anthropic.claude-3-haiku-20240307-v1:0'))
+      it 'OMITS thinking (nil) for a non-thinking model (claude-3-haiku)' do
+        wire = translator.render_request(request_for('anthropic.claude-3-haiku-20240307-v1:0'),
+                                         target: :invoke_model)
 
-        expect(result).to be_nil
+        expect(wire).not_to have_key(:thinking)
       end
     end
 

@@ -11,20 +11,25 @@ module Legion
         # converse paths) and the Translator (canonical render path) so the two
         # never diverge.
         #
-        # Bedrock supports exactly one thinking wire shape for Anthropic Claude:
-        #   { type: 'enabled', budget_tokens: N }   (native Anthropic Messages API)
+        # Bedrock supports TWO thinking wire shapes for Anthropic Claude:
         #
-        # There is NO Bedrock Claude model that accepts { type: 'adaptive' } —
-        # sending adaptive raises `ValidationException: adaptive thinking is not
-        # supported on this model` (observed live on opus-4-5) and surfaces as an
-        # HTTP 500. So a model either supports budgeted thinking (emit `enabled`)
-        # or it does not (OMIT the thinking field entirely — never `adaptive`).
+        # 1. BUDGETED (Claude 3.7, sonnet-4 base, opus-4 base, opus-4-5, haiku-4):
+        #    { type: 'enabled', budget_tokens: N }
         #
-        # Budgeted extended thinking arrived with Claude 3.7 Sonnet and is
-        # supported across the entire Claude 4 family (sonnet-4, opus-4.x,
-        # haiku-4.5). The match is a substring so it tolerates the many Bedrock
-        # model-id decorations (geo prefixes `us.`/`eu.`/`ap.`, `anthropic.`
-        # provider prefix, `-vN:0` version suffixes, `:200k` context suffixes).
+        # 2. ADAPTIVE (Claude opus-4-6, opus-4-7, opus-4-8, sonnet-4-6):
+        #    { type: 'adaptive' } + output_config: { effort: <low|medium|high> }
+        #    Gated by beta header 'effort-2025-11-24' in the anthropic_beta list.
+        #    These models REJECT { type: 'enabled', budget_tokens: N } with
+        #    `ValidationException: "thinking.type.enabled" is not supported for
+        #    this model. Use "thinking.type.adaptive" and "output_config.effort"`.
+        #
+        # PRECEDENCE: adaptive fragments are checked BEFORE budgeted because
+        # `claude-opus-4` (budgeted) is a substring of `claude-opus-4-7`
+        # (adaptive). An adaptive-fragment match wins.
+        #
+        # The match is a substring so it tolerates the many Bedrock model-id
+        # decorations (geo prefixes `us.`/`eu.`/`ap.`, `anthropic.` provider
+        # prefix, `-vN:0` version suffixes, `:200k` context suffixes).
         module ThinkingModes
           module_function
 
@@ -36,6 +41,20 @@ module Legion
           # with room for at least a short reply.
           OUTPUT_RESERVE = 128
 
+          # Beta header required for the adaptive effort API on Bedrock.
+          EFFORT_BETA_HEADER = 'effort-2025-11-24'
+
+          # Model-id fragments for Claude families that use the adaptive/effort
+          # thinking wire: { type: 'adaptive' } + output_config: { effort: ... }.
+          # These MUST be checked BEFORE BUDGETED_THINKING_FRAGMENTS because
+          # 'claude-opus-4' is a substring of 'claude-opus-4-7'.
+          ADAPTIVE_EFFORT_FRAGMENTS = %w[
+            claude-opus-4-6
+            claude-opus-4-7
+            claude-opus-4-8
+            claude-sonnet-4-6
+          ].freeze
+
           # Model-id fragments for Claude families that support explicit budgeted
           # extended thinking via { type: 'enabled', budget_tokens: N }.
           BUDGETED_THINKING_FRAGMENTS = %w[
@@ -45,9 +64,31 @@ module Legion
             claude-haiku-4
           ].freeze
 
+          # Bedrock effort enum — maps from Canonical resolved_effort to the
+          # Bedrock wire value. Bedrock accepts only low/medium/high.
+          EFFORT_MAP = {
+            'none' => 'low',
+            'low' => 'low',
+            'medium' => 'medium',
+            'high' => 'high',
+            'xhigh' => 'high',
+            'max' => 'high'
+          }.freeze
+
+          # @return [Boolean] true when the model uses adaptive thinking + effort.
+          # Checked BEFORE budgeted_thinking? to ensure precedence.
+          def adaptive_thinking?(model_id)
+            return false if model_id.nil? || model_id.to_s.strip.empty?
+
+            mid = model_id.to_s
+            ADAPTIVE_EFFORT_FRAGMENTS.any? { |fragment| mid.include?(fragment) }
+          end
+
           # @return [Boolean] true when the model supports { type: 'enabled', budget_tokens: N }
+          # but NOT adaptive thinking (adaptive wins when both would substring-match).
           def budgeted_thinking?(model_id)
             return false if model_id.nil? || model_id.to_s.strip.empty?
+            return false if adaptive_thinking?(model_id)
 
             mid = model_id.to_s
             # Substring scan (String#include?), NOT array intersection: intersect?
@@ -69,7 +110,7 @@ module Legion
             mid = model_id.to_s
             return false unless mid.include?('anthropic') || mid.include?('claude')
 
-            !budgeted_thinking?(model_id)
+            !adaptive_thinking?(model_id) && BUDGETED_THINKING_FRAGMENTS.none? { |f| mid.include?(f) }
           end
 
           # The single anthropic-model-id predicate (was duplicated in the
@@ -96,24 +137,28 @@ module Legion
             thinking.is_a?(Legion::Extensions::Llm::Canonical::Thinking::Config) && thinking.enabled?
           end
 
-          # B2: the single thinking wire-shape builder — { type: 'enabled',
-          # budget_tokens: N } or nil. Consumed by both dialects and both
-          # render stacks. The budget resolves through the shared
-          # effort<->budget SSOT (resolved_budget), so an effort-only config
-          # gets its SSOT-mapped budget instead of a fabricated 1024, and a
-          # budget-less { type: 'enabled' } (the Bedrock ValidationException
-          # shape) is unreachable: an enabled config always resolves a budget.
+          # B2: the single thinking wire-shape builder — returns the correct
+          # wire shape for the model:
+          # - Adaptive models: { type: 'adaptive' } (effort is a sibling field)
+          # - Budgeted models: { type: 'enabled', budget_tokens: N }
+          # - Non-thinking models: nil
           #
-          # Budget/max_tokens reconciliation: Bedrock requires max_tokens >
-          # budget_tokens. When effective_max_tokens is provided and the
-          # resolved budget would violate that constraint, the budget is
-          # clamped to (max_tokens - OUTPUT_RESERVE) with a floor of
+          # For adaptive models, use `adaptive_wire` to get the full descriptor
+          # (thinking shape + output_config + beta header requirement).
+          #
+          # Budget/max_tokens reconciliation (budgeted path only): Bedrock
+          # requires max_tokens > budget_tokens. When effective_max_tokens is
+          # provided and the resolved budget would violate that constraint, the
+          # budget is clamped to (max_tokens - OUTPUT_RESERVE) with a floor of
           # MINIMUM_BUDGET. If max_tokens is too small to accommodate even the
           # minimum budget, thinking is omitted (nil) to keep the request valid
           # rather than silently overriding the client's max_output_tokens cap.
           def thinking_wire(thinking:, model_id:, effective_max_tokens: nil, **)
             return nil unless thinking_enabled?(thinking)
             return nil if known_non_thinking?(model_id)
+
+            # Adaptive models use a different wire shape — no budget_tokens.
+            return { type: 'adaptive' } if adaptive_thinking?(model_id)
 
             budget = thinking.resolved_budget
             if budget.nil?
@@ -125,6 +170,34 @@ module Legion
             return nil unless budget
 
             { type: 'enabled', budget_tokens: budget }
+          end
+
+          # Full adaptive thinking descriptor for a model that requires the
+          # adaptive/effort wire. Returns a Hash with :thinking, :output_config,
+          # and :beta_header keys — or nil when thinking is not enabled or the
+          # model is not adaptive.
+          #
+          # The caller is responsible for placing each key at the correct wire
+          # position (invoke_model: top-level fields + anthropic_beta array;
+          # Converse: additionalModelRequestFields + beta array mechanism).
+          def adaptive_wire(thinking:, model_id:)
+            return nil unless thinking_enabled?(thinking)
+            return nil unless adaptive_thinking?(model_id)
+
+            effort = map_effort(thinking.resolved_effort)
+            {
+              thinking: { type: 'adaptive' },
+              output_config: { effort: effort },
+              beta_header: EFFORT_BETA_HEADER
+            }
+          end
+
+          # Maps a Canonical resolved_effort string to the Bedrock wire effort
+          # enum (low/medium/high). Falls back to 'high' for unknown values.
+          def map_effort(resolved_effort)
+            return 'high' if resolved_effort.nil?
+
+            EFFORT_MAP.fetch(resolved_effort, 'high')
           end
 
           # Clamp budget so that budget_tokens < effective_max_tokens (Bedrock
