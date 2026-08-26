@@ -65,11 +65,19 @@ module Legion
               :aws_sdk_default_chain
             end
 
-            def parse_embedding_response(response, model:)
+            # Non-conversation artifact (05 §3, O07): a documented Hash shape,
+            # not a canonical type.
+            def parse_embedding_response(response, model:, text:)
               body = parse_body(value(response, :body))
               vectors = body['embedding'] || body['embeddings'] || body.dig('data', 0, 'embedding')
-              Legion::Extensions::Llm::Embedding.new(vectors: vectors, model: model,
-                                                     input_tokens: body['inputTextTokenCount'])
+              {
+                text:,
+                model:,
+                embedding: vectors,
+                usage: Legion::Extensions::Llm::Canonical::Usage.build(
+                  input_tokens: body['inputTextTokenCount']
+                )
+              }
             end
 
             def parse_body(body)
@@ -119,10 +127,6 @@ module Legion
               object[key]
             rescue NameError
               nil
-            end
-
-            def safe_event_data(evt)
-              evt.respond_to?(:to_h) ? evt.to_h : evt.inspect[0, 500]
             end
           end
         end

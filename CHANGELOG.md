@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.5.8] - 2026-08-25
+
+### Added
+- **Model-aware adaptive/effort thinking wire** — Claude opus-4-6, opus-4-7, opus-4-8, opus-5, sonnet-4-6, and sonnet-5 on Bedrock now emit `{ type: 'adaptive' }` + `output_config: { effort: <low|medium|high|xhigh|max> }` with the `effort-2025-11-24` beta header, instead of the budgeted `{ type: 'enabled', budget_tokens: N }` shape which these models reject with `ValidationException`. Effort is passed through directly from the canonical `Thinking::Config#resolved_effort` (the full ladder maps 1:1); `none` or nil effort omits `output_config` so the API defaults to high. Both dispatch paths (invoke_model and Converse) emit the correct wire shape based on model classification. Precedence logic ensures `claude-opus-4-7` matches adaptive before `claude-opus-4` matches budgeted.
+
+## [0.5.7] - 2026-08-25
+
+### Fixed
+- **Budget/max_tokens reconciliation** — `ThinkingModes.thinking_wire` now clamps `budget_tokens` so it is strictly less than the effective `max_tokens` sent on the wire (Bedrock constraint: `max_tokens > budget_tokens`). When Codex sends `effort=high` (resolving to `budget_tokens=16384`) but the client's `max_output_tokens` is only 2048, the budget is clamped to `max_tokens - OUTPUT_RESERVE` (floor: 1024) instead of producing an HTTP 400 `ValidationException`. If `max_tokens` is too small to fit even the minimum budget, thinking is omitted to keep the request valid rather than overriding the client's cap.
+- **Removed latent NoMethodError** — Dropped the `|| params&.max_thinking_tokens` fallback in `thinking_wire`; `Canonical::Params#max_thinking_tokens` was deleted in lex-llm 0.8.3 and `&.` does not guard a deleted method on a non-nil receiver. `thinking.resolved_budget` is the sole budget source.
+
+## [0.5.6] - 2026-08-19
+
+### Changed
+- **Canonical dispatch boundary (N x N law)** — The production `BedrockCallable#chat` / `#stream_chat` / `#count_tokens` operations now call `Provider#enforce_canonical_messages!` before dispatch, and the provider's message-conversion seam (`DispatchHelpers#build_provider_messages`) accepts only `Canonical::Message` (pipeline dispatch) or the provider-native `Legion::Extensions::Llm::Message` (Chat facade); anything else raises a loud `ArgumentError`. The lenient message-level hash re-canonicalization that masked the 2026-08-19 hash-bypass defect is removed from the invoke_model render path. Client request formats and the Bedrock wire payload shape are unchanged.
+- **Dependency floor** — Requires `lex-llm >= 0.7.7` for `Provider#enforce_canonical_messages!` (the N x N dispatch boundary). The Gemfile adds a local-tree `lex-llm` path dependency to the test group so the adjacent checkout resolves against 0.7.7 during development.
+
+### Added
+- **Dispatch-boundary regression guards** — The SSOT v3 conformance spec now asserts that plain-Hash messages are rejected loudly at both the callable dispatch boundary and the provider render seam, and the model-policy / streaming specs that previously fed incidental Hash messages now use canonical inputs.
+
+### 0.8.0 conformance (SSOT v4 provider wave, 2026-08-20)
+
+#### Changed
+- **Legacy types migrated to Canonical** — Every provider parse/build path now renders FROM `Canonical::Message` / `Canonical::ContentBlock` and parses TO `Canonical::Response` / `Canonical::Chunk` / `Canonical::ToolCall` / `Canonical::Usage` / `Canonical::Thinking`. The deleted legacy `Llm::Message` / `Llm::Chunk` / `Llm::ToolCall` / `Llm::Content::Raw` / `Llm::Content::ImageAttachment` constructions and the `to_provider_message` re-canonicalization bridge are gone; the provider dispatch seam enforces `Canonical::Message` only.
+- **Callable boundary is the 0.8.0 contract** — `BedrockCallable#chat` / `#stream_chat` take messages positionally, matching the base `Provider#chat` signature and the fleet `WorkerExecution` dispatch. The `enforce_canonical_messages!` calls (the one shared lex-llm helper at the exact-execution boundary) and `normalize_dispatch_error(error:)` are kept.
+- **Offering read path (07 C5)** — The legacy `Routing::ModelOffering` production chain in the provider (`discover_offerings` override, `offering_for`, `offering_from_model`, `offering_from_summary`, `build_offering`, `static_offerings` and their filter helpers) is deleted; the base `Provider#discover_offerings` serves the activated inventory offerings from `Registry.snapshot`. The discovery actor's `OfferingDraft` writer path is the sole publication path.
+- **Streaming is canonical end-to-end** — Both streaming paths (Converse events and invoke_model Anthropic events) yield `Canonical::Chunk` objects (`text_delta` / `thinking_delta` / `tool_call_delta`) and the sequence ends in exactly one `done` chunk carrying usage + stop_reason; the accumulated state builds a `Canonical::Response`. Tool-input JSON fragments travel on the `tool_call_delta` chunk and are parsed once at stream end.
+- **Sync parse boundary** — The Converse and invoke_model sync parsers delegate to the gem's canonical `Translator` (one parse boundary); the `content_filtered` / `content_filter` wire stop-reason spellings map to canonical `:content_filter` at that single edge.
+- **Embed artifact (05 §3 / O07)** — `parse_embedding_response` returns the documented Hash artifact `{ text:, model:, embedding:, usage: Canonical::Usage }` (the deleted `Llm::Embedding` type is gone).
+
+#### Removed
+- **Legacy coordinator wiring** — The `ScopedRefresher::LegacyCoordinatorAdapter` compatibility adapter (and the `scoped_refresher` require) is removed from the discovery actor's `Publisher` construction; the mixed-version window is over with the lex-llm 0.8.0 cut.
+
+#### Added
+- **Conformance kit B1/B2** — The SSOT v3 conformance spec now loads the 0.8.0 boundary kit (`ssot_contract_examples.rb`) and runs the B1 (central canonical enforcement) and B2 (canonical outputs) shared example groups against the real `BedrockCallable` -> `Bedrock::Provider` -> stubbed-AWS-SDK boundary.
+- **RULES.md** — The 0.8.0 architecture law (`references/01-rules-draft.md`, byte-for-byte) ships at the repo root.
+
+#### Dependency
+- **Floor bump** — Requires `lex-llm >= 0.8.0` (the contract cut: canonical strictification, legacy rip, provider funnel, fleet v3, conformance kit).
+
 ## [0.5.5] - 2026-08-19
 
 ### Added

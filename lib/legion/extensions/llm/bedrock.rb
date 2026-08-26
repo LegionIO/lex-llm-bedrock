@@ -8,7 +8,8 @@ require 'legion/extensions/llm/bedrock/provider'
 require 'legion/extensions/llm/bedrock/translator'
 require 'legion/extensions/llm/bedrock/version'
 require 'legion/logging/helper'
-require 'legion/extensions/llm/bedrock/actors/discovery_refresh'
+require 'legion/extensions/llm/bedrock/helpers/callable'
+require 'legion/extensions/llm/bedrock/actors/discovery'
 
 module Legion
   module Extensions
@@ -60,20 +61,24 @@ module Legion
           Provider
         end
 
-        def self.registry_publisher
-          @registry_publisher ||=
-            Legion::Extensions::Llm::RegistryPublisher.new(provider_family: PROVIDER_FAMILY)
-        end
-
         def self.discover_instances
           candidates = {}
+          # B15: dedup is first-source-wins, so operator-configured
+          # instances (settings) are collected FIRST — they win their own
+          # credentials over source-named candidates (env/claude/broker),
+          # which are fallbacks. The old order let an env credential with
+          # the same value shadow an operator-named instance, renaming it
+          # to the source name (env_bearer, claude, ...).
+          discover_settings(candidates)
           discover_env_bearer(candidates)
           discover_claude_bearer(candidates)
           discover_env_sigv4(candidates)
-          discover_settings(candidates)
           discover_broker(candidates)
+          # enabled: false is a skip, not a credential: a disabled instance is
+          # never claimed (the discovery pipeline reads this method as the
+          # single claimable source).
           CredentialSources.dedup_credentials(candidates)
-                           .reject { |_, config| unresolved_credential?(config) }
+                           .reject { |_, config| config[:enabled] == false || unresolved_credential?(config) }
                            .transform_values do |config|
             sanitized = sanitize_instance_config(config)
             sanitized[:capabilities] ||= DEFAULT_CAPABILITIES.dup

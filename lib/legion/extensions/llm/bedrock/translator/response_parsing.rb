@@ -22,8 +22,8 @@ module Legion
               thinking_obj = if thinking_text.to_s.empty?
                                nil
                              else
-                               Canonical::Thinking.new(content: thinking_text.to_s,
-                                                       signature: nil)
+                               Canonical::Thinking.build(content: thinking_text.to_s,
+                                                         signature: nil)
                              end
 
               Canonical::Response.build(
@@ -104,17 +104,13 @@ module Legion
               end
             end
 
+            # B6: the ONE shared strict arguments parser (10 U2) — invalid or
+            # non-object JSON raises; the rescue-to-{} policy is deleted. A
+            # wire Hash passes through (already parsed by the transport).
             def parse_tool_input(input)
               return input if input.is_a?(Hash)
-              return {} unless input.is_a?(String)
 
-              begin
-                Legion::JSON.load(input)
-              rescue Legion::JSON::ParseError => e
-                handle_exception(e, level: :warn, handled: true,
-                                    operation: 'bedrock.translator.parse_tool_input')
-                {}
-              end
+              Legion::Extensions::Llm::Responses::ToolArguments.parse!(input)
             end
 
             def extract_stop_reason_from(message)
@@ -137,7 +133,7 @@ module Legion
               thinking_parts = Array(content).select { |b| b['type'] == 'thinking' }
               thinking_obj = if thinking_parts.any?
                                tp = thinking_parts.last
-                               Canonical::Thinking.new(content: tp['thinking'], signature: tp['signature'])
+                               Canonical::Thinking.build(content: tp['thinking'], signature: tp['signature'])
                              end
 
               tool_calls_list = Array(content).select { |b| b['type'] == 'tool_use' }.map do |b|

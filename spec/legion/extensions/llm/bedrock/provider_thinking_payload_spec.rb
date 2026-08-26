@@ -3,10 +3,16 @@
 require 'spec_helper'
 require 'legion/extensions/llm/bedrock/translator'
 
-# Bug 2: the thinking payload shape must match what each model actually supports.
+# B2: the thinking payload shape has ONE owner — ThinkingModes.thinking_wire,
+# consumed by both dialects and both render stacks. The shape must match what
+# each model actually supports:
 # - Models that support explicit budgeted thinking -> { type: 'enabled', budget_tokens: N }
 # - Models that do NOT support thinking -> OMIT the thinking field (nil), never { type: 'adaptive' }
 #   because Bedrock rejects adaptive on those models (ValidationException -> HTTP 500).
+# The dispatch boundary carries Canonical::Thinking::Config only; the budget
+# resolves through the shared effort<->budget SSOT (an effort-only config gets
+# its mapped budget, not a fabricated 1024; a budget-less { type: 'enabled' }
+# is unreachable).
 RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
   let(:base_config) do
     {
@@ -22,27 +28,51 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
     p
   end
 
-  describe '#invoke_model_thinking' do
+  let(:canonical) { Legion::Extensions::Llm::Canonical }
+  let(:thinking_modes) { Legion::Extensions::Llm::Bedrock::ThinkingModes }
+
+  describe 'ThinkingModes.thinking_wire (the shared builder)' do
     it 'returns { type: enabled, budget_tokens } for a budgeted-thinking model (opus-4-5)' do
-      result = provider.send(:invoke_model_thinking,
-                             model: 'anthropic.claude-opus-4-5-20251101-v1:0',
-                             thinking: { budget_tokens: 2048 })
+      result = thinking_modes.thinking_wire(
+        thinking: canonical::Thinking::Config.build(budget: 2048),
+        model_id: 'anthropic.claude-opus-4-5-20251101-v1:0'
+      )
 
       expect(result).to eq({ type: 'enabled', budget_tokens: 2048 })
     end
 
     it 'returns { type: enabled, budget_tokens } for claude-sonnet-4' do
-      result = provider.send(:invoke_model_thinking,
-                             model: 'anthropic.claude-sonnet-4-20250514-v1:0',
-                             thinking: { budget_tokens: 1500 })
+      result = thinking_modes.thinking_wire(
+        thinking: canonical::Thinking::Config.build(budget: 1500),
+        model_id: 'anthropic.claude-sonnet-4-20250514-v1:0'
+      )
 
       expect(result).to eq({ type: 'enabled', budget_tokens: 1500 })
     end
 
+    it 'resolves an effort-only config through the shared SSOT map (not a fabricated 1024)' do
+      result = thinking_modes.thinking_wire(
+        thinking: canonical::Thinking::Config.build(effort: 'high'),
+        model_id: 'anthropic.claude-opus-4-5-20251101-v1:0'
+      )
+
+      expect(result).to eq({ type: 'enabled', budget_tokens: 16_384 })
+    end
+
     it 'OMITS thinking (nil), never adaptive, for a non-thinking model (claude-3-haiku)' do
-      result = provider.send(:invoke_model_thinking,
-                             model: 'anthropic.claude-3-haiku-20240307-v1:0',
-                             thinking: { budget_tokens: 2048 })
+      result = thinking_modes.thinking_wire(
+        thinking: canonical::Thinking::Config.build(budget: 2048),
+        model_id: 'anthropic.claude-3-haiku-20240307-v1:0'
+      )
+
+      expect(result).to be_nil
+    end
+
+    it 'OMITS thinking for a present-but-disabled config (no effort, no budget)' do
+      result = thinking_modes.thinking_wire(
+        thinking: canonical::Thinking::Config.build(enabled: false),
+        model_id: 'anthropic.claude-opus-4-5-20251101-v1:0'
+      )
 
       expect(result).to be_nil
     end
@@ -52,8 +82,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
     it 'omits the thinking key entirely for a non-thinking model' do
       body = provider.send(:build_invoke_model_body,
                            messages: [], model: 'anthropic.claude-3-haiku-20240307-v1:0',
-                           temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
-                           thinking: { budget_tokens: 2048 })
+                           tools: nil, tool_prefs: nil,
+                           thinking: canonical::Thinking::Config.build(budget: 2048),
+                           params: canonical::Params.build(max_tokens: 100))
 
       expect(body).not_to have_key(:thinking)
     end
@@ -61,8 +92,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
     it 'includes an enabled thinking block for a thinking model' do
       body = provider.send(:build_invoke_model_body,
                            messages: [], model: 'anthropic.claude-opus-4-5-20251101-v1:0',
-                           temperature: nil, max_tokens: 100, tools: nil, tool_prefs: nil,
-                           thinking: { budget_tokens: 2048 })
+                           tools: nil, tool_prefs: nil,
+                           thinking: canonical::Thinking::Config.build(budget: 2048),
+                           params: canonical::Params.build(max_tokens: 4096))
 
       expect(body[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
     end
@@ -81,26 +113,26 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       )
     end
 
-    describe '#build_invoke_thinking' do
+    describe '#apply_invoke_thinking! (via render_request)' do
       it 'returns enabled+budget for a budgeted-thinking model (opus-4-5)' do
-        result = translator.send(:build_invoke_thinking,
-                                 request_for('anthropic.claude-opus-4-5-20251101-v1:0'))
+        wire = translator.render_request(request_for('anthropic.claude-opus-4-5-20251101-v1:0'),
+                                         target: :invoke_model)
 
-        expect(result).to eq({ type: 'enabled', budget_tokens: 2048 })
+        expect(wire[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
       end
 
       it 'returns enabled+budget for claude-sonnet-4' do
-        result = translator.send(:build_invoke_thinking,
-                                 request_for('anthropic.claude-sonnet-4-20250514-v1:0'))
+        wire = translator.render_request(request_for('anthropic.claude-sonnet-4-20250514-v1:0'),
+                                         target: :invoke_model)
 
-        expect(result).to eq({ type: 'enabled', budget_tokens: 2048 })
+        expect(wire[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
       end
 
-      it 'OMITS thinking (nil), never adaptive, for a non-thinking model (claude-3-haiku)' do
-        result = translator.send(:build_invoke_thinking,
-                                 request_for('anthropic.claude-3-haiku-20240307-v1:0'))
+      it 'OMITS thinking (nil) for a non-thinking model (claude-3-haiku)' do
+        wire = translator.render_request(request_for('anthropic.claude-3-haiku-20240307-v1:0'),
+                                         target: :invoke_model)
 
-        expect(result).to be_nil
+        expect(wire).not_to have_key(:thinking)
       end
     end
 

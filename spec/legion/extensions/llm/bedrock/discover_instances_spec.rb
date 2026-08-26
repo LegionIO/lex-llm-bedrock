@@ -254,6 +254,22 @@ RSpec.describe Legion::Extensions::Llm::Bedrock, '.discover_instances' do
 
       expect(discover.keys).to include(:env_bearer, :env_sigv4)
     end
+
+    # B15: an operator-configured instance wins its own credential over a
+    # source-named candidate (env/claude/broker) carrying the same value —
+    # the old first-source order let the env credential shadow (rename) the
+    # operator's instance.
+    it 'keeps the operator-named instance over an env candidate with the same bearer token' do
+      allow(credential_sources).to receive(:env).with('AWS_BEARER_TOKEN_BEDROCK').and_return('tok-same')
+      allow(credential_sources).to receive(:env).with('AWS_DEFAULT_REGION').and_return('us-east-1')
+      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :bedrock).and_return(
+        instances: { east: { region: 'us-east-1', bearer_token: 'tok-same' } }
+      )
+
+      expect(discover).to have_key(:east)
+      expect(discover).not_to have_key(:env_bearer)
+      expect(discover[:east][:bearer_token]).to eq('tok-same')
+    end
   end
 
   it 'returns an empty hash when no credentials are found' do

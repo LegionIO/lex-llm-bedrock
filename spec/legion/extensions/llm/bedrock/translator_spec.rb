@@ -67,6 +67,67 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
       )
       expect(translator.target_for(req)).to eq(:converse)
     end
+
+    it 'selects :converse for anthropic model with a present-but-disabled thinking config (B1)' do
+      req = canonical::Request.build(
+        messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hello')])],
+        thinking: canonical::Thinking::Config.build(enabled: false),
+        metadata: { model: 'anthropic.claude-sonnet-4' }
+      )
+      expect(translator.target_for(req)).to eq(:converse)
+    end
+  end
+
+  # B4: the translator consumes the selected model — it does not choose or
+  # default one (the messages.first.model response-provenance fallback is a
+  # recreated routing authority; the vLLM sibling raises on the same condition).
+  describe 'model selection (B4)' do
+    def request_without_model
+      canonical::Request.build(
+        messages: [
+          canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hello')],
+                                   model: 'claimed-by-first-message')
+        ]
+      )
+    end
+
+    it 'raises when routing and metadata carry no model' do
+      expect { translator.render_request(request_without_model) }
+        .to raise_error(ArgumentError, /no model in request; routing must select a model/)
+    end
+
+    it 'does not fall back to the first message\'s provenance model' do
+      expect { translator.target_for(request_without_model) }
+        .to raise_error(ArgumentError, /no model in request/)
+    end
+  end
+
+  # B5: the system member is the single system source — system-role messages
+  # are bridge residue (folded at request construction) and a non-String
+  # system member is poison; both fail loud instead of silently dropping or
+  # re-sourcing.
+  describe 'system sourcing (B5)' do
+    it 'raises on system-role messages in the message stream' do
+      req = canonical::Request.build(
+        messages: [
+          canonical::Message.build(role: :system, content: 'hidden system'),
+          canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])
+        ],
+        metadata: { model: 'meta.llama3' }
+      )
+      expect { translator.render_request(req) }
+        .to raise_error(ArgumentError, /system-role messages must be folded into the system member/)
+    end
+
+    it 'raises on a non-String system member (the legacy block-array shape)' do
+      req = canonical::Request.build(
+        system: [{ 'text' => 'block system' }],
+        messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
+        metadata: { model: 'meta.llama3' }
+      )
+      expect { translator.render_request(req) }
+        .to raise_error(ArgumentError, /the system member must be a String/)
+    end
   end
 
   describe '#render_request with :converse target' do
@@ -251,11 +312,11 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
       expect(wire).not_to have_key(:output_config)
     end
 
-    it 'renders enabled+budget thinking for other budgeted-thinking Claude 4 models (opus-4)' do
+    it 'renders enabled+budget thinking for other budgeted-thinking Claude 4 models (opus-4-5)' do
       req = canonical::Request.build(
         messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
         thinking: { budget: 2048, effort: 'high' },
-        metadata: { model: 'anthropic.claude-opus-4-7' }
+        metadata: { model: 'anthropic.claude-opus-4-5-20251101-v1:0' }
       )
 
       wire = translator.render_request(req, target: :invoke_model)
@@ -416,7 +477,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
         expect(resp.stop_reason).to eq(:tool_use)
       end
 
-      it 'parses arguments that are JSON strings' do
+      it 'parses arguments that are JSON strings through the shared strict parser' do
         wire = {
           'content' => [
             { 'type' => 'tool_use', 'id' => 'tc1', 'name' => 'do_thing',
@@ -428,8 +489,23 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
 
         resp = translator.parse_response(wire, model: 'test-model')
         expect(resp.tool_calls.first.arguments).to be_a(Hash)
-        # Legion::JSON.load returns symbol keys
-        expect(resp.tool_calls.first.arguments[:key]).to eq('value')
+        # B6: the shared strict parser (Responses::ToolArguments.parse!)
+        # returns string-keyed JSON objects
+        expect(resp.tool_calls.first.arguments['key']).to eq('value')
+      end
+
+      it 'raises on malformed tool-input JSON (never a fabricated {})' do
+        wire = {
+          'content' => [
+            { 'type' => 'tool_use', 'id' => 'tc1', 'name' => 'do_thing',
+              'input' => '{"key": ' }
+          ],
+          'usage' => { 'input_tokens' => 10, 'output_tokens' => 5 },
+          'stop_reason' => 'tool_use'
+        }
+
+        expect { translator.parse_response(wire, model: 'test-model') }
+          .to raise_error(ArgumentError, /not valid JSON/)
       end
     end
   end
@@ -470,7 +546,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
     end
 
     context 'with canonical tool_call_delta' do
-      it 'parses tool call delta' do
+      it 'carries the delta fragment through as the chunk tool_call member' do
         chunk = {
           'type' => 'tool_call_delta',
           'tool_call' => { 'id' => 'tc1', 'name' => 'search', 'arguments' => { 'query' => 'test' } },
@@ -479,7 +555,22 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
         result = translator.parse_chunk(chunk)
 
         expect(result.type).to eq(:tool_call_delta)
-        expect(result.tool_call&.name).to eq('search')
+        # B6: the fragment is passed through (the Chunk contract shape),
+        # never rebuilt into a ToolCall with a fabricated {} argument
+        expect(result.tool_call).to be_a(Hash)
+        expect(result.tool_call['name']).to eq('search')
+        expect(result.tool_call['arguments']).to eq({ 'query' => 'test' })
+      end
+
+      it 'keeps a fragment without arguments argument-less (no fabrication)' do
+        chunk = {
+          'type' => 'tool_call_delta',
+          'tool_call' => { 'id' => 'tc1', 'name' => 'search' },
+          'request_id' => 'req1'
+        }
+        result = translator.parse_chunk(chunk)
+
+        expect(result.tool_call['arguments']).to be_nil
       end
 
       it 'returns nil when no tool_call present' do

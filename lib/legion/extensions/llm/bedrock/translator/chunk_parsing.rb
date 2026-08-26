@@ -36,19 +36,17 @@ module Legion
               )
             end
 
+            # B6: the chunk's tool_call member is the delta FRAGMENT (the
+            # Chunk contract: Hash with the current state, arguments a String
+            # fragment until assembled) — it is passed through, never rebuilt
+            # into a ToolCall with a fabricated {} when arguments are still
+            # pending.
             def parse_tool_call_delta(raw)
               tc_hash = raw['tool_call'] || raw[:tool_call]
-              return nil unless tc_hash
+              return nil unless tc_hash.is_a?(Hash) && !tc_hash.empty?
 
-              tc = Canonical::ToolCall.build(
-                id: tc_hash[:id] || tc_hash['id'] || '',
-                name: tc_hash[:name] || tc_hash['name'] || '',
-                arguments: tc_hash[:arguments] || tc_hash['arguments'] || {},
-                source: tc_hash[:source] || tc_hash['source'] || :client,
-                status: tc_hash[:status] || tc_hash['status'] || :pending
-              )
               Canonical::Chunk.tool_call_delta(
-                tool_call: tc,
+                tool_call: tc_hash,
                 request_id: raw['request_id'] || raw[:request_id] || ''
               )
             end
