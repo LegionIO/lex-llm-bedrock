@@ -120,13 +120,14 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Translator do
     end
 
     it 'raises on a non-String system member (the legacy block-array shape)' do
-      req = canonical::Request.build(
-        system: [{ 'text' => 'block system' }],
-        messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
-        metadata: { model: 'meta.llama3' }
-      )
-      expect { translator.render_request(req) }
-        .to raise_error(ArgumentError, /the system member must be a String/)
+      expect do
+        req = canonical::Request.build(
+          system: [{ 'text' => 'block system' }],
+          messages: [canonical::Message.build(role: :user, content: [canonical::ContentBlock.text('hi')])],
+          metadata: { model: 'meta.llama3' }
+        )
+        translator.render_request(req)
+      end.to raise_error(ArgumentError, /system expected String|system member must be a String/)
     end
   end
 

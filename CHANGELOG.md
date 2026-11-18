@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.9] - 2026-11-17
+
+### Fixed
+- Classify Bedrock `ServiceUnavailableException` as request-local overload. Temporary AWS capacity failures no longer mark every offering on the instance unavailable and cause unrelated requests to fail routing.
+- Classify an explicitly disposed callable as exact-instance unavailability; readiness remains responsible for recovery.
+- Keep system-shape regression coverage valid when the shared canonical constructor rejects a non-String before the provider renderer receives it.
+
 ## [0.5.8] - 2026-08-25
 
 ### Added

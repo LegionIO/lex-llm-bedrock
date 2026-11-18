@@ -155,6 +155,8 @@ module Legion
 
             def classify_error(error:)
               case error
+              when Legion::Extensions::Llm::Inventory::Errors::CallableDisposedError
+                :instance_unavailable
               when Aws::BedrockRuntime::Errors::ThrottlingException,
                    Aws::Bedrock::Errors::ThrottlingException
                 :rate_limited
@@ -172,8 +174,9 @@ module Legion
                 :model_missing
               when Aws::BedrockRuntime::Errors::ServiceUnavailableException,
                    Aws::Bedrock::Errors::ServiceUnavailableException
-                # Explicit flat service-unavailable from AWS = instance_unavailable
-                :instance_unavailable
+                # AWS documents this as temporary capacity exhaustion, not
+                # authoritative evidence that the exact instance is offline.
+                :overloaded
               when Aws::BedrockRuntime::Errors::ServiceError,
                    Aws::Bedrock::Errors::ServiceError
                 classify_service_error(error: error)
@@ -189,9 +192,7 @@ module Legion
               when 401 then :authentication
               when 403 then :authorization
               when 404 then :model_missing
-              # NEVER classify raw 503/5xx as instance_unavailable by status alone.
-              # Only the explicit ServiceUnavailableException (handled above) justifies
-              # instance_unavailable. Everything else is request-local.
+              # Transport overload is request-local, including AWS's named 503.
               when 503, 529 then :overloaded
               else :provider_error
               end
