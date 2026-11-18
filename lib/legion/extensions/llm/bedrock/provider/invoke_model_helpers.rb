@@ -314,6 +314,9 @@ module Legion
                 end
               when 'message_delta'
                 state[:stop_reason] = (event_json['delta'] || {})['stop_reason']
+                # Final output counts are cumulative; retain input/cache counts
+                # from message_start without adding output tokens twice.
+                state[:final_usage] = (state[:final_usage] || {}).merge(event_json['usage'] || {})
               end
             rescue StandardError => e
               handle_exception(e, level: :error, handled: false,

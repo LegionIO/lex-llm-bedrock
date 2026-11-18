@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.10] - 2026-11-18
+
+### Fixed
+- Preserve explicit thinking budgets on Claude Sonnet 4.6 and Opus 4.6, which support both manual and adaptive thinking. A budget-only request no longer becomes adaptive low effort and silently permits thinking to be skipped. Both provider dispatch paths and canonical render targets use the shared thinking-mode decision; effort-only requests and adaptive-only models retain adaptive rendering.
+- Preserve provider-reported `output_tokens_details.thinking_tokens` in canonical usage. Streaming completion shares the translator's usage parser and merges final cumulative output counts with initial input/cache counts, including when thinking text is omitted.
+
 ## [0.5.9] - 2026-11-17
 
 ### Fixed

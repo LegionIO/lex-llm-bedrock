@@ -227,27 +227,10 @@ module Legion
               translator.parse_response(normalize_response(response), model: fallback_model)
             end
 
-            def cache_read_tokens(usage)
-              return nil if usage.nil?
-
-              value(usage, :cache_read_input_tokens) || value(usage, 'cache_read_input_tokens')
-            end
-
-            def cache_write_tokens(usage)
-              return nil if usage.nil?
-
-              value(usage, :cache_creation_input_tokens) || value(usage, 'cache_creation_input_tokens')
-            end
-
             # Canonical usage from a wire usage hash/struct (provider spellings
             # translated at this edge, 13 §3).
             def usage_from(usage)
-              Canonical::Usage.build(
-                input_tokens: value(usage, :input_tokens),
-                output_tokens: value(usage, :output_tokens),
-                cache_read_tokens: cache_read_tokens(usage),
-                cache_write_tokens: cache_write_tokens(usage)
-              )
+              translator.parse_usage(usage)
             end
 
             # One stop-reason edge: the gem's Translator map is the single

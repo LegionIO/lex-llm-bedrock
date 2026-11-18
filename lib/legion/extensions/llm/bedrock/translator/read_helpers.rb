@@ -124,25 +124,18 @@ module Legion
               Canonical::Usage.from_hash(h)
             end
 
+            # Provider stream completion shares the same wire-to-canonical edge.
+            public :parse_usage
+
             def build_usage_hash(usage_raw)
-              if usage_raw.is_a?(Hash)
-                {
-                  input_tokens: usage_raw[:input_tokens] || usage_raw['input_tokens'],
-                  output_tokens: usage_raw[:output_tokens] || usage_raw['output_tokens'],
-                  cache_read_tokens: usage_raw[:cache_read_input_tokens] || usage_raw['cache_read_input_tokens'],
-                  cache_write_tokens: usage_raw[:cache_creation_input_tokens] ||
-                    usage_raw['cache_creation_input_tokens'],
-                  thinking_tokens: usage_raw[:thinking_tokens] || usage_raw['thinking_tokens']
-                }
-              else
-                {
-                  input_tokens: safe_key_read(usage_raw, :input_tokens),
-                  output_tokens: safe_key_read(usage_raw, :output_tokens),
-                  cache_read_tokens: safe_key_read(usage_raw, :cache_read_input_tokens),
-                  cache_write_tokens: safe_key_read(usage_raw, :cache_creation_input_tokens),
-                  thinking_tokens: safe_key_read(usage_raw, :thinking_tokens)
-                }
-              end
+              details = safe_key_read(usage_raw, :output_tokens_details)
+              {
+                input_tokens: safe_key_read(usage_raw, :input_tokens),
+                output_tokens: safe_key_read(usage_raw, :output_tokens),
+                cache_read_tokens: safe_key_read(usage_raw, :cache_read_input_tokens),
+                cache_write_tokens: safe_key_read(usage_raw, :cache_creation_input_tokens),
+                thinking_tokens: safe_key_read(details, :thinking_tokens) || safe_key_read(usage_raw, :thinking_tokens)
+              }
             end
           end
         end
