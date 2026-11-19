@@ -112,11 +112,7 @@ class BedrockSsotHarness
   end
 
   def instance_unavailable_error
-    # Only ServiceUnavailableException from AWS SDK qualifies as instance_unavailable
-    Aws::BedrockRuntime::Errors::ServiceUnavailableException.new(
-      Seahorse::Client::RequestContext.new,
-      'Service Unavailable'
-    )
+    Legion::Extensions::Llm::Inventory::Errors::CallableDisposedError.new('bedrock callable is disconnected')
   end
 
   def overloaded_error
@@ -441,17 +437,26 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       registry.dispatch_instance_unavailable(
         instance_key: a[:key],
         publisher_token_id: a[:token].publisher_token_id,
-        reason: 'ServiceUnavailableException from us-east-1'
+        reason: 'exact callable disconnected'
       )
 
       expect(registry.snapshot.instance(instance_key: a[:key]).availability.state).to eq(:unavailable)
       expect(registry.snapshot.instance(instance_key: b[:key]).availability.state).to eq(:available)
     end
 
-    it 'normalizes ServiceUnavailableException as instance_unavailable' do
+    it 'normalizes an explicitly disconnected callable as instance_unavailable' do
       outcome = ssot_harness.normalize_dispatch_error(error: ssot_harness.instance_unavailable_error)
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)
       expect(outcome.kind).to eq(:instance_unavailable)
+    end
+
+    [Aws::BedrockRuntime::Errors::ServiceUnavailableException,
+     Aws::Bedrock::Errors::ServiceUnavailableException].each do |error_class|
+      it "keeps #{error_class} request-local as temporary overload" do
+        error = error_class.new(Seahorse::Client::RequestContext.new, 'Temporary capacity constraint')
+        outcome = ssot_harness.normalize_dispatch_error(error: error)
+        expect(outcome.kind).to eq(:overloaded)
+      end
     end
 
     it 'normalizes generic 503 as overloaded, never as instance_unavailable' do
@@ -879,7 +884,7 @@ RSpec.describe Legion::Extensions::Llm::Bedrock do
       registry.dispatch_instance_unavailable(
         instance_key: ctx[:key],
         publisher_token_id: ctx[:token].publisher_token_id,
-        reason: 'ServiceUnavailableException — instance went down'
+        reason: 'exact callable disconnected'
       )
       expect(registry.snapshot.instance(instance_key: ctx[:key]).availability.state).to eq(:unavailable)
 

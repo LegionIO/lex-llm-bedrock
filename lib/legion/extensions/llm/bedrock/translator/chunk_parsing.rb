@@ -102,8 +102,10 @@ module Legion
                 )
                 Canonical::Chunk.tool_call_delta(tool_call: tc, request_id: request_id)
               when 'message_delta'
-                stop = nested_read(raw, 'delta', 'stop_reason', :stop_reason) || ''
-                Canonical::Chunk.done(request_id: request_id, stop_reason: map_stop_reason(stop))
+                stop = safe_key_read(safe_key_read(raw, :delta), :stop_reason)
+                usage_raw = safe_key_read(raw, :usage)
+                Canonical::Chunk.done(request_id: request_id, stop_reason: map_stop_reason(stop),
+                                      usage: usage_raw ? parse_usage(usage_raw) : nil)
               end
             end
           end

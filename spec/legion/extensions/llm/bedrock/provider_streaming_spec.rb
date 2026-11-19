@@ -11,7 +11,6 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
   subject(:provider) { described_class.allocate }
 
   let(:canonical) { Legion::Extensions::Llm::Canonical }
-
   # Minimal stand-in for Aws::BedrockRuntime::EventStreams::*
   let(:fake_stream_class) do
     Class.new do
@@ -33,6 +32,8 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       end
     end
   end
+
+  before { provider.define_singleton_method(:region) { 'us-east-1' } }
 
   describe '#stream_converse' do
     it 'yields canonical text delta chunks and ends in a done chunk' do
@@ -125,12 +126,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
         { 'type' => 'content_block_start', 'content_block' => { 'type' => 'text' } },
         { 'type' => 'content_block_delta', 'delta' => { 'type' => 'text_delta', 'text' => 'Hello' } },
         { 'type' => 'content_block_delta', 'delta' => { 'type' => 'text_delta', 'text' => ' world' } },
-        { 'type' => 'message_delta', 'delta' => { 'stop_reason' => 'end_turn' } }
+        { 'type' => 'message_delta', 'delta' => { 'stop_reason' => 'end_turn' },
+          'usage' => { 'output_tokens' => 25, 'output_tokens_details' => { 'thinking_tokens' => 17 } } }
       ]
     end
 
     before do
-      provider.define_singleton_method(:region) { 'us-east-1' }
       provider.define_singleton_method(:config) { Struct.new(:bearer_token).new(nil) }
     end
 
@@ -160,6 +161,9 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Provider do
       expect(response).to be_a(canonical::Response)
       expect(response.text).to eq('Hello world')
       expect(response.usage.input_tokens).to eq(5)
+      expect(response.usage.output_tokens).to eq(25)
+      expect(response.usage.thinking_tokens).to eq(17)
+      expect(chunks.last.usage).to eq(response.usage)
       expect(response.stop_reason).to eq(:end_turn)
     end
 

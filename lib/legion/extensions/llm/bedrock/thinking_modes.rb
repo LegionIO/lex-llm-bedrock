@@ -19,16 +19,21 @@ module Legion
         # 2. ADAPTIVE (Claude opus-4-6/4-7/4-8/5, sonnet-4-6/5):
         #    { type: 'adaptive' } + output_config: { effort: <low|medium|high|xhigh|max> }
         #    Gated by beta header 'effort-2025-11-24' in the anthropic_beta list.
-        #    These models REJECT { type: 'enabled', budget_tokens: N } with
+        #    Adaptive-only models REJECT { type: 'enabled', budget_tokens: N } with
         #    `ValidationException: "thinking.type.enabled" is not supported for
         #    this model. Use "thinking.type.adaptive" and "output_config.effort"`.
         #    The effort value is passed through directly from the canonical
         #    Thinking::Config#resolved_effort (the full ladder matches 1:1).
         #    'none' or nil effort → omit output_config (API defaults to high).
         #
+        # Opus 4.6 and Sonnet 4.6 support BOTH shapes. Preserve an explicit
+        # budget on those models; effort-only requests use adaptive thinking.
+        # Converting a supplied budget into adaptive effort changes the request
+        # from manual thinking to a mode that may skip thinking altogether.
+        #
         # PRECEDENCE: adaptive fragments are checked BEFORE budgeted because
         # `claude-opus-4` (budgeted) is a substring of `claude-opus-4-7`
-        # (adaptive). An adaptive-fragment match wins.
+        # (adaptive). Only the explicit dual-mode list permits both shapes.
         #
         # The match is a substring so it tolerates the many Bedrock model-id
         # decorations (geo prefixes `us.`/`eu.`/`ap.`, `anthropic.` provider
@@ -60,6 +65,10 @@ module Legion
             claude-sonnet-5
           ].freeze
 
+          # AWS still accepts manual budgets on these adaptive-capable models.
+          # https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html
+          DUAL_MODE_THINKING_FRAGMENTS = %w[claude-opus-4-6 claude-sonnet-4-6].freeze
+
           # Model-id fragments for Claude families that support explicit budgeted
           # extended thinking via { type: 'enabled', budget_tokens: N }.
           BUDGETED_THINKING_FRAGMENTS = %w[
@@ -83,16 +92,22 @@ module Legion
             ADAPTIVE_EFFORT_FRAGMENTS.any? { |fragment| mid.include?(fragment) }
           end
 
-          # @return [Boolean] true when the model supports { type: 'enabled', budget_tokens: N }
-          # but NOT adaptive thinking (adaptive wins when both would substring-match).
+          # @return [Boolean] true when the model supports { type: 'enabled', budget_tokens: N }.
+          # Dual-mode 4.6 models support both; adaptive-only models must not
+          # accidentally match a broad budgeted-family substring.
           def budgeted_thinking?(model_id)
             return false if model_id.nil? || model_id.to_s.strip.empty?
+            return true if DUAL_MODE_THINKING_FRAGMENTS.any? { |fragment| model_id.to_s.include?(fragment) }
             return false if adaptive_thinking?(model_id)
 
             mid = model_id.to_s
             # Substring scan (String#include?), NOT array intersection: intersect?
             # raises TypeError on a String argument.
             BUDGETED_THINKING_FRAGMENTS.any? { |fragment| mid.include?(fragment) }
+          end
+
+          def adaptive_mode?(thinking:, model_id:)
+            adaptive_thinking?(model_id) && !(thinking.budget && budgeted_thinking?(model_id))
           end
 
           # @return [Boolean] true when the model is KNOWN not to support thinking.
@@ -156,8 +171,9 @@ module Legion
             return nil unless thinking_enabled?(thinking)
             return nil if known_non_thinking?(model_id)
 
-            # Adaptive models use a different wire shape — no budget_tokens.
-            return { type: 'adaptive' } if adaptive_thinking?(model_id)
+            # Preserve explicit budgets where supported; only resolve to an
+            # adaptive effort when that is the selected model's usable mode.
+            return { type: 'adaptive' } if adaptive_mode?(thinking: thinking, model_id: model_id)
 
             budget = thinking.resolved_budget
             if budget.nil?
@@ -185,7 +201,7 @@ module Legion
           # Converse: additionalModelRequestFields + beta array mechanism).
           def adaptive_wire(thinking:, model_id:)
             return nil unless thinking_enabled?(thinking)
-            return nil unless adaptive_thinking?(model_id)
+            return nil unless adaptive_mode?(thinking: thinking, model_id: model_id)
 
             effort = wire_effort(thinking.resolved_effort)
             result = { thinking: { type: 'adaptive' }, beta_header: EFFORT_BETA_HEADER }
