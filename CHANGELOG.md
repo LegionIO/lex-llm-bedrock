@@ -1,13 +1,5 @@
 # Changelog
 
-## [0.5.11] - 2026-11-21
-
-### Fixed
-- Explicit bearer instances select the SDK's `httpBearerAuth` scheme without requiring `AWS_BEARER_TOKEN_BEDROCK`. The configured token retains precedence over a different environment token.
-- Preserve explicit `credentials: nil` for bearer clients so AWS SDK construction does not search the unused SigV4 credential chain or EC2 metadata service. Runtime, catalog, and readiness clients share the same auth projection; explicit SigV4, named profiles, and the default credential chain remain intact when bearer authentication is absent. Request payloads, retries, and timeouts are unchanged.
-- Require the SDK releases providing auth-scheme preference and Bedrock bearer support: `aws-sdk-core >= 3.227.0`, `aws-sdk-bedrock >= 1.55.0`, and `aws-sdk-bedrockruntime >= 1.52.0`.
-- Exercise real SDK signing/HTTP and actual host definitions in regressions, without SDK credential stubs or fabricated actor classes.
-
 ## [0.5.10] - 2026-11-18
 
 ### Fixed

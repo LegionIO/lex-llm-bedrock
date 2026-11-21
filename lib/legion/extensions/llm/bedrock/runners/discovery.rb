@@ -343,12 +343,12 @@ module Legion
               opts[:stub_responses] = true if instance_cfg[:bedrock_stub_responses] == true
               bearer = instance_cfg[:bearer_token]
               if bearer.is_a?(String) && !bearer.strip.empty?
-                opts.merge!(Legion::Extensions::Llm::Bedrock::Provider::ClientHelpers.bearer_options(token: bearer))
+                opts[:token_provider] = Aws::StaticTokenProvider.new(bearer)
               else
                 creds = resolve_credentials(instance_cfg: instance_cfg)
                 opts[:credentials] = creds if creds
               end
-              opts
+              opts.compact
             end
 
             def resolve_credentials(instance_cfg:)

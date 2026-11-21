@@ -2,7 +2,7 @@
 
 Amazon Bedrock provider extension for `Legion::Extensions::Llm`.
 
-This gem adds a hosted Bedrock provider surface for Legion LLM routing. It uses the official AWS SDK for Ruby. Loading the extension does not invoke a model; tests do not require live AWS credentials. It requires `lex-llm >= 0.8.0` for the canonical provider, inventory, and fleet contracts.
+This gem adds a hosted Bedrock provider surface for Legion LLM routing. It uses the official AWS SDK for Ruby and keeps discovery offline by default, so loading the extension or running tests does not require live AWS credentials. It requires `lex-llm >= 0.4.3` for the shared provider contract, response normalization, model offering, readiness, fleet envelope contract, and provider-owned fleet responder execution.
 
 ## Architecture
 
@@ -50,13 +50,12 @@ Instances with unresolved credential references (`vault://` or `env://` URIs) ar
 
 | Gem | Required | Purpose |
 |-----|----------|---------|
-| `aws-sdk-core` (>= 3.227.0) | Yes | Explicit SDK authentication scheme selection |
-| `aws-sdk-bedrock` (>= 1.55.0) | Yes | Bedrock management client (ListFoundationModels) |
-| `aws-sdk-bedrockruntime` (>= 1.52.0) | Yes | Bedrock runtime client (Converse, InvokeModel) |
+| `aws-sdk-bedrock` | Yes | Bedrock management client (ListFoundationModels) |
+| `aws-sdk-bedrockruntime` | Yes | Bedrock runtime client (Converse, InvokeModel) |
 | `legion-json` (>= 1.2.1) | Yes | JSON serialization |
 | `legion-logging` (>= 1.3.2) | Yes | Structured logging via Helper |
-| `legion-settings` (>= 1.4.2) | Yes | Configuration |
-| `lex-llm` (>= 0.8.0) | Yes | Canonical provider, inventory, and fleet contracts |
+| `legion-settings` (>= 1.3.14) | Yes | Configuration |
+| `lex-llm` (>= 0.4.3) | Yes | Shared provider contract, response normalization, model offerings, fleet envelopes, and fleet responder execution |
 | `legion-transport` (>= 1.4.14) | Yes | AMQP subscriptions and replies |
 
 ## File Map
@@ -91,28 +90,13 @@ Legion::Extensions::Llm.configure do |config|
 end
 ```
 
-Without an explicit bearer token, static keys, or profile, the AWS SDK default credential provider chain is used. Default settings define the Bedrock provider family, default instance metadata, AWS credential slots, and opt-in fleet responder controls:
+If explicit keys are not configured, the AWS SDK default credential provider chain is used. Default settings define the Bedrock provider family, default instance metadata, AWS credential slots, and opt-in fleet responder controls:
 
 ```ruby
 Legion::Extensions::Llm::Bedrock.default_settings
 ```
 
 Configuration options: `bedrock_region`, `bedrock_endpoint`, `bedrock_access_key_id`, `bedrock_secret_access_key`, `bedrock_session_token`, `bedrock_profile`, `bedrock_stub_responses`, `bearer_token`.
-
-### SDK authentication
-
-An instance with an explicit `bearer_token` uses the SDK's documented
-`auth_scheme_preference: ['httpBearerAuth']` and `Aws::StaticTokenProvider`.
-It works without `AWS_BEARER_TOKEN_BEDROCK`; a configured token also wins over a
-different environment token. Its SDK options retain explicit `credentials: nil`
-so construction does not search for unused SigV4 credentials or probe EC2 IMDS.
-The same projection applies to runtime, catalog, and readiness clients.
-
-Instances without bearer authentication retain explicit SigV4 credentials,
-named profiles, or the normal AWS credential chain. This does not disable IMDS
-globally, provide synthetic credentials, or fall back from an invalid bearer
-token to another authentication mode. Request payloads, retries, and timeouts
-are unchanged. See [AWS SDK authentication options](https://docs.aws.amazon.com/sdk-for-ruby/v3/api/Aws/BedrockRuntime/Client.html).
 
 ## Fleet Responder
 

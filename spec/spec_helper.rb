@@ -3,11 +3,45 @@
 require 'bundler/setup'
 require 'legion/extensions/llm'
 
-# Load the declared host test dependency without starting services or actors.
-require 'legion/transport'
-require 'legion/extensions/helpers/lex'
-require 'legion/extensions/actors/every'
-require 'legion/extensions/actors/subscription'
+# The LegionIO actor runtime (Every/Subscription actor bases, the Lex settings
+# helper) is the host platform, not a dependency of this gem. When it is not
+# on the load path, provide minimal stand-ins so the production actor files
+# load unchanged. Specs that exercise actor logic drive `manual`/`shutdown`
+# directly — the stand-in Every starts no timer.
+begin
+  require 'legion/extensions/helpers/lex'
+rescue LoadError
+  require 'legion/logging/helper'
+  # The module is host-platform; in isolated gem tests mix in the real
+  # legion-settings Helper so `settings` exercises the genuine 1.4.2
+  # nested-path resolution ([:extensions][:llm][:bedrock]), and the real
+  # legion-logging Helper so `log` and `handle_exception` behave as in the
+  # daemon (logged, never re-raised).
+  module Legion
+    module Extensions
+      module Helpers
+        module Lex
+          include ::Legion::Settings::Helper
+          include ::Legion::Logging::Helper
+        end
+      end
+    end
+  end
+end
+
+begin
+  require 'legion/extensions/actors/every'
+rescue LoadError
+  module Legion
+    module Extensions
+      module Actors
+        class Every
+          def initialize(**) = nil
+        end
+      end
+    end
+  end
+end
 
 Legion::Logging.setup(level: 'fatal', log_file: File::NULL, log_stdout: false, async: false, color: false)
 

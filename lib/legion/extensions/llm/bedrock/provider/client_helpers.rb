@@ -8,17 +8,6 @@ module Legion
           # AWS client construction, credential resolution, and low-level
           # response parsing utilities.
           module ClientHelpers
-            # An explicit bearer binding must neither discover SigV4 credentials
-            # nor rely on AWS_BEARER_TOKEN_BEDROCK to select its signing scheme.
-            # Discovery and inference consume the same SDK auth projection.
-            def self.bearer_options(token:, **)
-              {
-                token_provider: Aws::StaticTokenProvider.new(token),
-                credentials: nil,
-                auth_scheme_preference: ['httpBearerAuth']
-              }
-            end
-
             private
 
             def bedrock_client
@@ -34,18 +23,15 @@ module Legion
                 region: region,
                 endpoint: config.bedrock_endpoint,
                 stub_responses: config.bedrock_stub_responses
-              }.compact
+              }
 
               if bearer_token_configured?
-                opts.merge!(Legion::Extensions::Llm::Bedrock::Provider::ClientHelpers.bearer_options(
-                              token: config.bearer_token
-                            ))
+                opts[:token_provider] = Aws::StaticTokenProvider.new(config.bearer_token)
               else
-                resolved = credentials
-                opts[:credentials] = resolved if resolved
+                opts[:credentials] = credentials
               end
 
-              opts
+              opts.compact
             end
 
             def bearer_token_configured?
