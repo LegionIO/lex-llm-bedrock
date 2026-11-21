@@ -4,9 +4,10 @@ source 'https://rubygems.org'
 
 gemspec
 
-# Local-tree resolution: use the adjacent lex-llm checkout when present so the
-# canonical-boundary work resolves against the unreleased 0.7.7.
+# Exercise the real host actor definitions and the SDK's HTTP/auth boundary.
 group :test do
+  gem 'legionio'
+  gem 'webmock'
   lex_llm_path = File.expand_path('../lex-llm', __dir__)
   gem 'lex-llm', path: lex_llm_path if Dir.exist?(lex_llm_path)
 end

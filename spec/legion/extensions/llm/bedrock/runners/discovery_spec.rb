@@ -424,12 +424,12 @@ RSpec.describe Legion::Extensions::Llm::Bedrock::Runners::Discovery do
     it 'reads the registered discovery interval' do
       settings_root[:llm] = { bedrock: { discovery: { interval_seconds: 42 } } }
 
-      actor = Legion::Extensions::Llm::Bedrock::Actor::Discovery.new
+      actor = Legion::Extensions::Llm::Bedrock::Actor::Discovery.allocate
       expect(actor.time).to eq(42)
     end
 
     it 'falls back to the registered default (never nil) when the settings tree has no discovery section' do
-      actor = Legion::Extensions::Llm::Bedrock::Actor::Discovery.new
+      actor = Legion::Extensions::Llm::Bedrock::Actor::Discovery.allocate
       expect(actor.time).to eq(300)
     end
 

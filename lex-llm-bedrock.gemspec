@@ -23,8 +23,10 @@ Gem::Specification.new do |spec|
   spec.files = `git ls-files -z`.split("\x0").reject { |file| file.match(%r{^(spec|test|features|tmp|coverage)/}) }
   spec.require_paths = ['lib']
 
-  spec.add_dependency 'aws-sdk-bedrock'
-  spec.add_dependency 'aws-sdk-bedrockruntime'
+  # July 2025 SDK release: explicit auth-scheme preference and Bedrock bearer support.
+  spec.add_dependency 'aws-sdk-bedrock', '>= 1.55.0'
+  spec.add_dependency 'aws-sdk-bedrockruntime', '>= 1.52.0'
+  spec.add_dependency 'aws-sdk-core', '>= 3.227.0'
   spec.add_dependency 'legion-json', '>= 1.2.1'
   spec.add_dependency 'legion-logging', '>= 1.3.2'
   spec.add_dependency 'legion-settings', '>= 1.4.2'

@@ -2,22 +2,12 @@
 
 require 'spec_helper'
 
-module Legion
-  module Extensions
-    module Actors
-      unless const_defined?(:Subscription, false)
-        class Subscription
-          def initialize(*) = true
-        end
-      end
-    end
-  end
-end
-
 require 'legion/extensions/llm/bedrock/actors/fleet_worker'
 
 RSpec.describe Legion::Extensions::Llm::Bedrock::Actor::FleetWorker do
-  subject(:actor) { described_class.new }
+  # These assertions exercise dispatch/configuration methods, not subscription
+  # startup. Use the real class without opening a transport subscription.
+  subject(:actor) { described_class.allocate }
 
   it 'uses the shared logging helper' do
     expect(described_class.ancestors).to include(Legion::Logging::Helper)
